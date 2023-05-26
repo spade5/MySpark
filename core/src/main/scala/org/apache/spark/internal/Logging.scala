@@ -57,7 +57,8 @@ trait Logging {
 
   // Log methods that take only a String
   protected def logInfo(msg: => String): Unit = {
-    if (log.isInfoEnabled) log.info(msg)
+//    if (log.isInfoEnabled)
+    log.info(msg)
   }
 
   protected def logDebug(msg: => String): Unit = {

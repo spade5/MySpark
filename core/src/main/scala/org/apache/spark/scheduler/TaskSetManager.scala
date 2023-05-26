@@ -470,6 +470,7 @@ private[spark] class TaskSetManager(
       }
 
       var dequeuedTaskIndex: Option[Int] = None
+      // mod: dequeue -> select
       val taskDescription =
         dequeueTask(execId, host, allowedLocality)
           .map { case (index, taskLocality, speculative) =>
