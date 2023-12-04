@@ -37,6 +37,8 @@ import org.apache.spark.util.random.SamplingUtils
  * Note that, partitioner must be deterministic, i.e. it must return the same partition id given
  * the same partition key.
  */
+
+// scalastyle:off println
 abstract class Partitioner extends Serializable {
   def numPartitions: Int
   def getPartition(key: Any): Int
@@ -114,9 +116,12 @@ class HashPartitioner(partitions: Int) extends Partitioner {
 
   def numPartitions: Int = partitions
 
-  def getPartition(key: Any): Int = key match {
-    case null => 0
-    case _ => Utils.nonNegativeMod(key.hashCode, numPartitions)
+  def getPartition(key: Any): Int = {
+    println("HashPartitioner getPartition for [" + key + "]")
+    key match {
+      case null => 0
+      case _ => Utils.nonNegativeMod(key.hashCode, numPartitions)
+    }
   }
 
   override def equals(other: Any): Boolean = other match {
@@ -222,6 +227,7 @@ class RangePartitioner[K : Ordering : ClassTag, V](
   private var binarySearch: ((Array[K], K) => Int) = CollectionsUtils.makeBinarySearch[K]
 
   def getPartition(key: Any): Int = {
+    println("RangePartitioner getPartition for [" + key + "]")
     val k = key.asInstanceOf[K]
     var partition = 0
     if (rangeBounds.length <= 128) {
@@ -425,6 +431,7 @@ class PromptPartitioner[K : Ordering : ClassTag, V](
   private var binarySearch: ((Array[K], K) => Int) = CollectionsUtils.makeBinarySearch[K]
 
   def getPartition(key: Any): Int = {
+    println("PromptPartitioner getPartition for [" + key + "]")
     val k = key.asInstanceOf[K]
     var partition = 0
     if (rangeBounds.length <= 128) {
@@ -575,3 +582,5 @@ class PromptPartitioner2(partitions: Int) extends Partitioner {
 
   override def hashCode: Int = numPartitions
 }
+
+// scalastyle:on println
