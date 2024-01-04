@@ -88,7 +88,8 @@ object Partitioner {
     } else {
       if (rdd.context.conf.get("spark.executorEnv.Partitioner") == "PromptPartitioner") {
 
-        // TODO: partitioner
+        // TODO: 自定义 partitioner
+        new PromptMapPartitioner(defaultNumPartitions)
       } else {
         new HashPartitioner(defaultNumPartitions)
       }
@@ -117,6 +118,29 @@ object Partitioner {
  * produce an unexpected or incorrect result.
  */
 class HashPartitioner(partitions: Int) extends Partitioner {
+  require(partitions >= 0, s"Number of partitions ($partitions) cannot be negative.")
+
+  def numPartitions: Int = partitions
+
+  def getPartition(key: Any): Int = {
+    println("HashPartitioner getPartition for [" + key + "]")
+    key match {
+      case null => 0
+      case _ => Utils.nonNegativeMod(key.hashCode, numPartitions)
+    }
+  }
+
+  override def equals(other: Any): Boolean = other match {
+    case h: HashPartitioner =>
+      h.numPartitions == numPartitions
+    case _ =>
+      false
+  }
+
+  override def hashCode: Int = numPartitions
+}
+
+class PromptMapPartitioner(partitions: Int) extends Partitioner {
   require(partitions >= 0, s"Number of partitions ($partitions) cannot be negative.")
 
   def numPartitions: Int = partitions
