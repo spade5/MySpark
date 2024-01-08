@@ -161,6 +161,10 @@ private[streaming] class BlockGenerator(
    * Push a single data item into the buffer.
    */
   def addData(data: Any): Unit = {
+    // scalastyle:off println
+    print("addData:")
+    println(data)
+    // scalastyle:on println
     if (state == Active) {
       waitToPush()
       synchronized {

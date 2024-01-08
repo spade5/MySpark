@@ -72,6 +72,9 @@ private[streaming] class BlockManagerBasedBlockHandler(
   def storeBlock(blockId: StreamBlockId, block: ReceivedBlock): ReceivedBlockStoreResult = {
 
     var numRecords: Option[Long] = None
+    // scalastyle:off println
+    println(block)
+    // scalastyle:on println
 
     val putSucceeded: Boolean = block match {
       case ArrayBufferBlock(arrayBuffer) =>
