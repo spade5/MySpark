@@ -54,6 +54,10 @@ private[streaming] class ReceiverSupervisorImpl(
 
   private val receivedBlockHandler: ReceivedBlockHandler = {
     if (WriteAheadLogUtils.enableReceiverLog(env.conf)) {
+      // scalastyle:off println
+      println("WriteAheadLogUtils.enableReceiverLog(env.conf) is true")
+      // scalastyle:on println
+
       if (checkpointDirOption.isEmpty) {
         throw new SparkException(
           "Cannot enable receiver write-ahead log without checkpoint directory set. " +
@@ -63,6 +67,9 @@ private[streaming] class ReceiverSupervisorImpl(
       new WriteAheadLogBasedBlockHandler(env.blockManager, env.serializerManager, receiver.streamId,
         receiver.storageLevel, env.conf, hadoopConf, checkpointDirOption.get)
     } else {
+      // scalastyle:off println
+      println("WriteAheadLogUtils.enableReceiverLog(env.conf) is false")
+      // scalastyle:on println
       new BlockManagerBasedBlockHandler(env.blockManager, receiver.storageLevel)
     }
   }
@@ -203,10 +210,17 @@ private[streaming] class ReceiverSupervisorImpl(
   override def createBlockGenerator(
       blockGeneratorListener: BlockGeneratorListener): BlockGenerator = {
     // Cleanup BlockGenerators that have already been stopped
-    val stoppedGenerators = registeredBlockGenerators.asScala.filter{ _.isStopped() }
+    val stoppedGenerators = registeredBlockGenerators.asScala.filter{ _.isStopped }
     stoppedGenerators.foreach(registeredBlockGenerators.remove(_))
 
-    val newBlockGenerator = new BlockGenerator(blockGeneratorListener, streamId, env.conf)
+    val blockGeneratorName = env.conf.get("spark.streaming.blockGeneratorName", "")
+    val newBlockGenerator = {
+      blockGeneratorName match {
+        case "Partition" =>
+          new PartitionBlockGenerator (blockGeneratorListener, streamId, env.conf, env)
+        case _ => new DefaultBlockGenerator(blockGeneratorListener, streamId, env.conf)
+      }
+    }
     registeredBlockGenerators.add(newBlockGenerator)
     newBlockGenerator
   }

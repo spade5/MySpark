@@ -33,4 +33,8 @@ private[spark] class TaskSet(
   val id: String = stageId + "." + stageAttemptId
 
   override def toString: String = "TaskSet " + id
+
+  // scalastyle:off println
+  // println("TaskSet Size: " + tasks.length)
+  // scalastyle:on println
 }

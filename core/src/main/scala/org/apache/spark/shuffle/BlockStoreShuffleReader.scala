@@ -102,6 +102,7 @@ private[spark] class BlockStoreShuffleReader[K, C](
     val metricIter = CompletionIterator[(Any, Any), Iterator[(Any, Any)]](
       recordIter.map { record =>
         readMetrics.incRecordsRead(1)
+        readMetrics.updateBlockStats(record)
         record
       },
       context.taskMetrics().mergeShuffleReadMetrics())

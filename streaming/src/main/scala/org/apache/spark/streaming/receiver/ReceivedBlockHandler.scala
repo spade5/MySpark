@@ -70,6 +70,9 @@ private[streaming] class BlockManagerBasedBlockHandler(
   extends ReceivedBlockHandler with Logging {
 
   def storeBlock(blockId: StreamBlockId, block: ReceivedBlock): ReceivedBlockStoreResult = {
+    // scalastyle:off println
+    println("BlockManagerBasedBlockHandler.storeBlock", blockId)
+    // scalastyle:on println
 
     var numRecords: Option[Long] = None
 

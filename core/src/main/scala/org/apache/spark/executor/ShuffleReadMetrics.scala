@@ -18,6 +18,7 @@
 package org.apache.spark.executor
 
 import org.apache.spark.annotation.DeveloperApi
+import org.apache.spark.rdd.BlockStats
 import org.apache.spark.shuffle.ShuffleReadMetricsReporter
 import org.apache.spark.util.LongAccumulator
 
@@ -138,6 +139,7 @@ private[spark] class TempShuffleReadMetrics extends ShuffleReadMetricsReporter {
   private[this] var _localBytesRead = 0L
   private[this] var _fetchWaitTime = 0L
   private[this] var _recordsRead = 0L
+  val blockStats = new BlockStats[Any]("temp shuffle read")
 
   override def incRemoteBlocksFetched(v: Long): Unit = _remoteBlocksFetched += v
   override def incLocalBlocksFetched(v: Long): Unit = _localBlocksFetched += v
@@ -146,6 +148,7 @@ private[spark] class TempShuffleReadMetrics extends ShuffleReadMetricsReporter {
   override def incLocalBytesRead(v: Long): Unit = _localBytesRead += v
   override def incFetchWaitTime(v: Long): Unit = _fetchWaitTime += v
   override def incRecordsRead(v: Long): Unit = _recordsRead += v
+  override def updateBlockStats(item: Any): Unit = blockStats.insert(item)
 
   def remoteBlocksFetched: Long = _remoteBlocksFetched
   def localBlocksFetched: Long = _localBlocksFetched

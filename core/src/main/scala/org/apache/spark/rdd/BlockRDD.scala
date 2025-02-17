@@ -44,6 +44,11 @@ class BlockRDD[T: ClassTag](sc: SparkContext, @transient val blockIds: Array[Blo
     assertValid()
     val blockManager = SparkEnv.get.blockManager
     val blockId = split.asInstanceOf[BlockRDDPartition].blockId
+
+    // scalastyle:off println
+    // println(s"BlockRDD.compute: split = $split, blockId = $blockId")
+    // scalastyle:on println
+
     blockManager.get[T](blockId) match {
       case Some(block) => block.data.asInstanceOf[Iterator[T]]
       case None =>

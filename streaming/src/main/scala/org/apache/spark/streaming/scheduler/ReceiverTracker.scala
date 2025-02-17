@@ -18,20 +18,19 @@
 package org.apache.spark.streaming.scheduler
 
 import java.util.concurrent.{CountDownLatch, TimeUnit}
-
 import scala.collection.mutable.HashMap
 import scala.concurrent.ExecutionContext
 import scala.util.{Failure, Success}
-
 import org.apache.spark._
 import org.apache.spark.internal.Logging
 import org.apache.spark.rdd.RDD
 import org.apache.spark.rpc._
 import org.apache.spark.scheduler.{ExecutorCacheTaskLocation, TaskLocation}
+import org.apache.spark.storage.StreamBlockId
 import org.apache.spark.streaming.{StreamingContext, Time}
 import org.apache.spark.streaming.receiver._
 import org.apache.spark.streaming.util.WriteAheadLogUtils
-import org.apache.spark.util.{SerializableConfiguration, ThreadUtils, Utils}
+import org.apache.spark.util.{SerializableConfiguration, TaskEnd, ThreadUtils, Utils}
 
 
 /** Enumeration to identify current state of a Receiver */
@@ -53,6 +52,11 @@ private[streaming] case class RegisterReceiver(
     receiverEndpoint: RpcEndpointRef
   ) extends ReceiverTrackerMessage
 private[streaming] case class AddBlock(receivedBlockInfo: ReceivedBlockInfo)
+  extends ReceiverTrackerMessage
+
+private[streaming] case class AddBlockExtraInfo(extraInfo: BlockExtraInfo)
+  extends ReceiverTrackerMessage
+private[streaming] case class AskBlockExtraInfo(blockId: StreamBlockId)
   extends ReceiverTrackerMessage
 private[streaming] case class ReportError(streamId: Int, message: String, error: String)
 private[streaming] case class DeregisterReceiver(streamId: Int, msg: String, error: String)
@@ -455,6 +459,8 @@ class ReceiverTracker(ssc: StreamingContext, skipReceiverLaunch: Boolean = false
   /** Check if tracker has been marked for stopped */
   private def isTrackerStopped: Boolean = trackerState == Stopped
 
+  private val blockExtraInfo = new HashMap[StreamBlockId, BlockExtraInfo]
+
   /** RpcEndpoint to receive messages from the receivers. */
   private class ReceiverTrackerEndpoint(override val rpcEnv: RpcEnv) extends ThreadSafeRpcEndpoint {
 
@@ -473,6 +479,22 @@ class ReceiverTracker(ssc: StreamingContext, skipReceiverLaunch: Boolean = false
           receiverPreferredLocations(receiver.streamId) = receiver.preferredLocation
           startReceiver(receiver, executors)
         }
+
+      case AddBlockExtraInfo(extraInfo) =>
+        blockExtraInfo.put(extraInfo.blockId, extraInfo)
+
+       case TaskEnd(blockId, executorId, executionTime) =>
+        blockExtraInfo.getOrElse(blockId.asInstanceOf[StreamBlockId], None) match {
+          case extraInfo: BlockExtraInfo =>
+            // scalastyle:off println
+            val info = s"TaskEnd: $blockId, $executorId," +
+              s"${extraInfo.blockStats.calc().mkString("[", ", ", "]")}, $executionTime"
+            println(info)
+            logInfo(info)
+          case None =>
+            logWarning(s"Block $blockId not found in blockExtraInfo")
+        }
+
       case RestartReceiver(receiver) =>
         // Old scheduled executors minus the ones that are not active any more
         val oldScheduledExecutors = getStoredScheduledExecutors(receiver.streamId)
@@ -524,6 +546,10 @@ class ReceiverTracker(ssc: StreamingContext, skipReceiverLaunch: Boolean = false
         } else {
           context.reply(addBlock(receivedBlockInfo))
         }
+      // 回答 block 对应的信息
+      case AskBlockExtraInfo(blockId) =>
+        context.reply(blockExtraInfo.getOrElse(blockId, None))
+
       case DeregisterReceiver(streamId, message, error) =>
         deregisterReceiver(streamId, message, error)
         context.reply(true)

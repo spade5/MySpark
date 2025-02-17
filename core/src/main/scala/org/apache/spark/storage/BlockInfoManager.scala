@@ -329,6 +329,11 @@ private[storage] class BlockInfoManager extends Logging {
       case None =>
         // Block does not yet exist or is removed, so we are free to acquire the write lock
         infos(blockId) = newBlockInfo
+
+        // scalastyle:off println
+        // println("lockNewBlockForWriting: blockId: " + blockId)
+        // scalastyle:on println
+
         lockForWriting(blockId)
         true
     }

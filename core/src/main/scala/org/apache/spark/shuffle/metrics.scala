@@ -33,6 +33,8 @@ private[spark] trait ShuffleReadMetricsReporter {
   private[spark] def incLocalBytesRead(v: Long): Unit
   private[spark] def incFetchWaitTime(v: Long): Unit
   private[spark] def incRecordsRead(v: Long): Unit
+
+  private[spark] def updateBlockStats(item: Any): Unit
 }
 
 

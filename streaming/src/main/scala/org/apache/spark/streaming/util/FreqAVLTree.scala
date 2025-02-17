@@ -6,11 +6,13 @@ import java.util.{Timer, TimerTask}
 import scala.annotation.tailrec
 import scala.collection.mutable
 
-
-private[streaming] class FreqAVLTree[K](updateIntervalMs: Long = 500,
-                                    updateCount: Int = 500) extends Serializable {
+private[streaming] class FreqAVLTree[K](
+    keepData: Boolean = false,
+    updateIntervalMs: Long = 500,
+    updateCount: Int = 500) extends Serializable {
   private var root: AVLTree[K] = Empty
   private val keyMap: mutable.HashMap[K, Node[K]] = mutable.HashMap()
+  private val keyListMap: mutable.HashMap[K, mutable.ArrayBuffer[K]] = mutable.HashMap()
   private val keyMapToUpdate: mutable.HashMap[K, Int] = mutable.HashMap()
   private var currentCount: Int = 0
   var updateTimes: Int = 0
@@ -26,32 +28,54 @@ private[streaming] class FreqAVLTree[K](updateIntervalMs: Long = 500,
     currentCount += 1
     keyMapToUpdate(key) = keyMapToUpdate.getOrElse(key, 0) + 1
 
+    if (keepData) {
+      keyListMap.getOrElseUpdate(key, mutable.ArrayBuffer()).append(key)
+    }
+
     if (currentCount >= updateCount) {
       update()
     }
   }
 
-  private def update(): Unit = {
-    updateTimes += 1
-    if (keyMapToUpdate.nonEmpty) {
-      keyMapToUpdate.keys.foreach(key => {
-        if (keyMap.contains(key)) {
-          val value = keyMap(key).value
-          root = delete(root, value)
-          keyMapToUpdate(key) += value.frequency
-          keyMap -= key
-        }
-        root = insert(root, KeyFreqValue(key, keyMapToUpdate(key)))
-      })
+  def empty(): Boolean = root == Empty
 
-      keyMapToUpdate.clear()
-    }
+  def clear(): Unit = {
+    root = Empty
+    keyMap.clear()
+    keyListMap.clear()
+    keyMapToUpdate.clear()
     currentCount = 0
   }
 
-  def getAll: List[KeyFreqValue[K]] = {
+  private def update(): Unit = {
+    updateTimes += 1
+    synchronized {
+      if (keyMapToUpdate.nonEmpty) {
+        keyMapToUpdate.keys.foreach(key => {
+          if (keyMap.contains(key)) {
+            val value = keyMap(key).value
+            root = delete(root, value)
+            keyMapToUpdate(key) += value.frequency
+            keyMap -= key
+          }
+          root = insert(root, KeyFreqValue(key, keyMapToUpdate(key)))
+        })
+
+        keyMapToUpdate.clear()
+      }
+      currentCount = 0
+    }
+  }
+
+  def getAllKeyFreqs: List[KeyFreqValue[K]] = {
     update()
     inOrder(root)
+  }
+
+  def getAllData: List[mutable.ArrayBuffer[K]] = {
+    getAllKeyFreqs.map {
+      case KeyFreqValue(key, _) => keyListMap.getOrElse(key, mutable.ArrayBuffer())
+    }
   }
 
   private def height(tree: AVLTree[K]): Int = tree match {
@@ -136,7 +160,7 @@ private[streaming] class FreqAVLTree[K](updateIntervalMs: Long = 500,
 
   private def inOrder(tree: AVLTree[K]): List[KeyFreqValue[K]] = tree match {
     case Empty => Nil
-    case Node(value, left, right, _) => inOrder(left) ++ List(value) ++ inOrder(right)
+    case Node(value, left, right, _) => inOrder(right) ++ List(value) ++ inOrder(left)
   }
 
   def close(): Unit = {
@@ -157,7 +181,7 @@ case class Node[A](
 
 // scalastyle:off println
 object FreqAVLTreeTest extends App {
-  private val freqAVLTree: FreqAVLTree[String] = new FreqAVLTree[String](1000, 10)
+  private val freqAVLTree: FreqAVLTree[String] = new FreqAVLTree[String](true, 1000, 10)
 
   val words = List("hello", "hello", "hello", "hello1", "hello",
     "hello", "hello", "hello", "hello", "hello", "world", "word", "hello", "word",
@@ -165,7 +189,7 @@ object FreqAVLTreeTest extends App {
 
   words.foreach(key => freqAVLTree.insert(key))
   println(freqAVLTree.updateTimes)
-  println(freqAVLTree.getAll)
+  println(freqAVLTree.getAllKeyFreqs)
   println(freqAVLTree.updateTimes)
   Thread.sleep(2000)
   println(freqAVLTree.updateTimes)

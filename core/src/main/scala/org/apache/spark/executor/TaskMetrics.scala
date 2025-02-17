@@ -19,11 +19,11 @@ package org.apache.spark.executor
 
 import scala.collection.JavaConverters._
 import scala.collection.mutable.{ArrayBuffer, LinkedHashMap}
-
 import org.apache.spark._
 import org.apache.spark.annotation.DeveloperApi
 import org.apache.spark.internal.Logging
 import org.apache.spark.internal.config.Tests.IS_TESTING
+import org.apache.spark.rdd.BlockStats
 import org.apache.spark.scheduler.AccumulableInfo
 import org.apache.spark.storage.{BlockId, BlockStatus}
 import org.apache.spark.util._
@@ -56,6 +56,7 @@ class TaskMetrics private[spark] () extends Serializable {
   private val _diskBytesSpilled = new LongAccumulator
   private val _peakExecutionMemory = new LongAccumulator
   private val _updatedBlockStatuses = new CollectionAccumulator[(BlockId, BlockStatus)]
+  private val _blockStats = new BlockStats[Any]("Task Metrics" + System.currentTimeMillis)
 
   /**
    * Time taken on the executor to deserialize this task.
@@ -200,6 +201,7 @@ class TaskMetrics private[spark] () extends Serializable {
   private[spark] def mergeShuffleReadMetrics(): Unit = synchronized {
     if (tempShuffleReadMetrics.nonEmpty) {
       shuffleReadMetrics.setMergeValues(tempShuffleReadMetrics.toSeq)
+      // tempShuffleReadMetrics.foreach((m) => _blockStats.merge(m.blockStats))
     }
   }
 

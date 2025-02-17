@@ -19,18 +19,15 @@ package org.apache.spark.scheduler
 
 import java.io.NotSerializableException
 import java.util.Properties
-import java.util.concurrent.{ConcurrentHashMap, TimeoutException, TimeUnit}
+import java.util.concurrent.{ConcurrentHashMap, TimeUnit, TimeoutException}
 import java.util.concurrent.atomic.AtomicInteger
-
 import scala.annotation.tailrec
 import scala.collection.Map
 import scala.collection.mutable
 import scala.collection.mutable.{HashMap, HashSet, ListBuffer}
 import scala.concurrent.duration._
 import scala.util.control.NonFatal
-
 import com.google.common.util.concurrent.{Futures, SettableFuture}
-
 import org.apache.spark._
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.executor.{ExecutorMetrics, TaskMetrics}
@@ -41,7 +38,7 @@ import org.apache.spark.network.shuffle.{BlockStoreClient, MergeFinalizerListene
 import org.apache.spark.network.shuffle.protocol.MergeStatuses
 import org.apache.spark.network.util.JavaUtils
 import org.apache.spark.partial.{ApproximateActionListener, ApproximateEvaluator, PartialResult}
-import org.apache.spark.rdd.{RDD, RDDCheckpointData}
+import org.apache.spark.rdd.{BlockRDDPartition, RDD, RDDCheckpointData}
 import org.apache.spark.resource.ResourceProfile
 import org.apache.spark.resource.ResourceProfile.{DEFAULT_RESOURCE_PROFILE_ID, EXECUTOR_CORES_LOCAL_PROPERTY, PYSPARK_MEMORY_LOCAL_PROPERTY}
 import org.apache.spark.rpc.RpcTimeout
@@ -264,6 +261,8 @@ private[spark] class DAGScheduler(
   private val shuffleMergeFinalizeWaitSec =
     sc.getConf.get(config.PUSH_BASED_SHUFFLE_MERGE_FINALIZE_TIMEOUT)
 
+  private lazy val trackerEndpoint = RpcUtils.makeDriverRef("ReceiverTracker", env.conf, env.rpcEnv)
+
   // Since SparkEnv gets initialized after DAGScheduler, externalShuffleClient needs to be
   // initialized lazily
   private lazy val externalShuffleClient: Option[BlockStoreClient] =
@@ -303,6 +302,17 @@ private[spark] class DAGScheduler(
       taskInfo: TaskInfo): Unit = {
     eventProcessLoop.post(
       CompletionEvent(task, reason, result, accumUpdates, metricPeaks, taskInfo))
+      // scalastyle:off println
+      val partition = stageIdToStage(task.stageId).rdd.partitions(task.partitionId)
+      partition match {
+        case part: BlockRDDPartition =>
+          val blockId = part.blockId
+          trackerEndpoint.send(TaskEnd(blockId, taskInfo.executorId,
+            taskInfo.finishTime - taskInfo.launchTime))
+          /* println(s"taskEnded: ${blockId}, ${task.stageId}, ${task.partitionId}, " +
+            s"${taskInfo.finishTime - taskInfo.launchTime}") */
+        case _ =>
+      }
   }
 
   /**
@@ -1492,6 +1502,7 @@ private[spark] class DAGScheduler(
         return
     }
 
+    // TODO 生成 Tasks 的地方，在生成的时候指定预期的 executor
     val tasks: Seq[Task[_]] = try {
       val serializedTaskMetrics = closureSerializer.serialize(stage.latestInfo.taskMetrics).array()
       stage match {
@@ -1503,7 +1514,8 @@ private[spark] class DAGScheduler(
             stage.pendingPartitions += id
             new ShuffleMapTask(stage.id, stage.latestInfo.attemptNumber,
               taskBinary, part, locs, properties, serializedTaskMetrics, Option(jobId),
-              Option(sc.applicationId), sc.applicationAttemptId, stage.rdd.isBarrier())
+              Option(sc.applicationId), sc.applicationAttemptId, stage.rdd.isBarrier(),
+              part.preferExecutorId)
           }
 
         case stage: ResultStage =>
@@ -1514,7 +1526,7 @@ private[spark] class DAGScheduler(
             new ResultTask(stage.id, stage.latestInfo.attemptNumber,
               taskBinary, part, locs, id, properties, serializedTaskMetrics,
               Option(jobId), Option(sc.applicationId), sc.applicationAttemptId,
-              stage.rdd.isBarrier())
+              stage.rdd.isBarrier(), part.preferExecutorId)
           }
       }
     } catch {

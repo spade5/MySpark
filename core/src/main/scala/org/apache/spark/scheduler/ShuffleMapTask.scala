@@ -20,10 +20,9 @@ package org.apache.spark.scheduler
 import java.lang.management.ManagementFactory
 import java.nio.ByteBuffer
 import java.util.Properties
-
 import org.apache.spark._
 import org.apache.spark.broadcast.Broadcast
-import org.apache.spark.internal.{config, Logging}
+import org.apache.spark.internal.{Logging, config}
 import org.apache.spark.rdd.RDD
 
 /**
@@ -60,7 +59,8 @@ private[spark] class ShuffleMapTask(
     jobId: Option[Int] = None,
     appId: Option[String] = None,
     appAttemptId: Option[String] = None,
-    isBarrier: Boolean = false)
+    isBarrier: Boolean = false,
+    preferExecutorId: Option[String] = None)
   extends Task[MapStatus](stageId, stageAttemptId, partition.index, localProperties,
     serializedTaskMetrics, jobId, appId, appAttemptId, isBarrier)
   with Logging {

@@ -21,7 +21,6 @@ import java.io._
 import java.lang.management.ManagementFactory
 import java.nio.ByteBuffer
 import java.util.Properties
-
 import org.apache.spark._
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.rdd.RDD
@@ -63,7 +62,8 @@ private[spark] class ResultTask[T, U](
     jobId: Option[Int] = None,
     appId: Option[String] = None,
     appAttemptId: Option[String] = None,
-    isBarrier: Boolean = false)
+    isBarrier: Boolean = false,
+    val preferExecutorId: Option[String] = None)
   extends Task[U](stageId, stageAttemptId, partition.index, localProperties, serializedTaskMetrics,
     jobId, appId, appAttemptId, isBarrier)
   with Serializable {

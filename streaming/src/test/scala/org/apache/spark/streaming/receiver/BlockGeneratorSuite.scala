@@ -57,7 +57,7 @@ class BlockGeneratorSuite extends SparkFunSuite with BeforeAndAfter with TimeLim
     require(listener.onPushBlockCalled === false)
 
     // Verify that creating the generator does not start it
-    blockGenerator = new BlockGenerator(listener, 0, conf, clock)
+    blockGenerator = new DefaultBlockGenerator(listener, 0, conf, clock)
     assert(blockGenerator.isActive() === false, "block generator active before start()")
     assert(blockGenerator.isStopped() === false, "block generator stopped before start()")
     assert(listener.onAddDataCalled === false)
@@ -145,7 +145,7 @@ class BlockGeneratorSuite extends SparkFunSuite with BeforeAndAfter with TimeLim
   test("stop ensures correct shutdown") {
     val listener = new TestBlockGeneratorListener
     val clock = new ManualClock()
-    blockGenerator = new BlockGenerator(listener, 0, conf, clock)
+    blockGenerator = new DefaultBlockGenerator(listener, 0, conf, clock)
     require(listener.onGenerateBlockCalled === false)
     blockGenerator.start()
     assert(blockGenerator.isActive(), "block generator")
@@ -209,7 +209,7 @@ class BlockGeneratorSuite extends SparkFunSuite with BeforeAndAfter with TimeLim
         throw new SparkException("test")
       }
     }
-    blockGenerator = new BlockGenerator(listener, 0, conf)
+    blockGenerator = new DefaultBlockGenerator(listener, 0, conf)
     blockGenerator.start()
     assert(listener.onErrorCalled === false)
     blockGenerator.addData(1)

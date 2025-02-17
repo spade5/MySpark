@@ -26,6 +26,8 @@ trait Partition extends Serializable {
    */
   def index: Int
 
+  val preferExecutorId: Option[String] = None
+
   // A better default implementation of HashCode
   override def hashCode(): Int = index
 

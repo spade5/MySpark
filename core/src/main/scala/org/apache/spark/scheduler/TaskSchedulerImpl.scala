@@ -37,7 +37,7 @@ import org.apache.spark.scheduler.SchedulingMode.SchedulingMode
 import org.apache.spark.scheduler.TaskLocality.TaskLocality
 import org.apache.spark.storage.BlockManagerId
 import org.apache.spark.util.{AccumulatorV2, Clock, SystemClock, ThreadUtils, Utils}
-
+// scalastyle:off println
 /**
  * Schedules tasks for multiple types of clusters by acting through a SchedulerBackend.
  * It can also work with a local setup by using a `LocalSchedulerBackend` and setting
@@ -378,6 +378,8 @@ private[spark] class TaskSchedulerImpl(
     var minLaunchedLocality: Option[TaskLocality] = None
     // nodes and executors that are excluded for the entire application have already been
     // filtered out by this point
+    // TODO: 此处将 Executor 分配给 TaskSet，需要拆分为寻找 task 对应的 Executor
+
     for (i <- 0 until shuffledOffers.size) {
       val execId = shuffledOffers(i).executorId
       val host = shuffledOffers(i).host
@@ -393,6 +395,7 @@ private[spark] class TaskSchedulerImpl(
             val taskCpus = ResourceProfile.getTaskCpusOrDefaultForProfile(prof, conf)
             val (taskDescOption, didReject, index) =
               taskSet.resourceOffer(execId, host, maxLocality, taskResAssignments)
+            // TODO: resourceOffer 里面会deque task，这里的逻辑要反过来，先 deque，再找到对应的 Executor
             noDelayScheduleRejects &= !didReject
             for (task <- taskDescOption) {
               val (locality, resources) = if (task != null) {
@@ -541,6 +544,13 @@ private[spark] class TaskSchedulerImpl(
     val availableCpus = shuffledOffers.map(o => o.cores).toArray
     val resourceProfileIds = shuffledOffers.map(o => o.resourceProfileId).toArray
     val sortedTaskSets = rootPool.getSortedTaskSetQueue
+
+//    println("availableResources: " + availableResources.map(_.mkString("Map(", ", ", ")")).
+//      mkString("Array(", ", ", ")"))
+//    println("availableCpus: " + availableCpus.mkString("Array(", ", ", ")"))
+//    println("resourceProfileIds: " + resourceProfileIds.mkString("Array(", ", ", ")"))
+//    println("sortedTaskSets: " + sortedTaskSets.size)
+
     for (taskSet <- sortedTaskSets) {
       logDebug("parentName: %s, name: %s, runningTasks: %s".format(
         taskSet.parent.name, taskSet.name, taskSet.runningTasks))
@@ -552,6 +562,7 @@ private[spark] class TaskSchedulerImpl(
     // Take each TaskSet in our scheduling order, and then offer it to each node in increasing order
     // of locality levels so that it gets a chance to launch local tasks on all of them.
     // NOTE: the preferredLocality order: PROCESS_LOCAL, NODE_LOCAL, NO_PREF, RACK_LOCAL, ANY
+    // TODO 真正分配任务的地方，生成 taskSet 时指定 executor，在这块进行判断
     for (taskSet <- sortedTaskSets) {
       // we only need to calculate available slots if using barrier scheduling, otherwise the
       // value is -1
@@ -592,6 +603,11 @@ private[spark] class TaskSchedulerImpl(
           } while (launchedTaskAtCurrentMaxLocality)
         }
 
+ /*       println("launchedAnyTask: " + launchedAnyTask)
+        println("noDelaySchedulingRejects: " + noDelaySchedulingRejects)
+        println("globalMinLocality: " + globalMinLocality)
+        println("legacyLocalityWaitReset: " + legacyLocalityWaitReset)
+*/
         if (!legacyLocalityWaitReset) {
           if (noDelaySchedulingRejects) {
             if (launchedAnyTask &&

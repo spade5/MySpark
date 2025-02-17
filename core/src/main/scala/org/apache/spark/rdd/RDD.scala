@@ -154,6 +154,8 @@ abstract class RDD[T: ClassTag](
   /** A unique ID for this RDD (within its SparkContext). */
   val id: Int = sc.newRddId()
 
+  val blockStats = new BlockStats[T]("RDD")
+
   /** A friendly name for this RDD */
   @transient var name: String = _
 
@@ -420,7 +422,14 @@ abstract class RDD[T: ClassTag](
    */
   def map[U: ClassTag](f: T => U): RDD[U] = withScope {
     val cleanF = sc.clean(f)
-    new MapPartitionsRDD[U, T](this, (_, _, iter) => iter.map(cleanF))
+    new MapPartitionsRDD[U, T](this, (_, _, iter) => {
+      val res = iter.map((item) => {
+        blockStats.insert(item)
+        cleanF(item)
+      })
+      // blockStats.print()
+      res
+    })
   }
 
   /**
@@ -526,7 +535,8 @@ abstract class RDD[T: ClassTag](
       new CoalescedRDD(
         new ShuffledRDD[Int, T, T](
           mapPartitionsWithIndexInternal(distributePartition, isOrderSensitive = true),
-          new HashPartitioner(numPartitions)),
+//          new HashPartitioner(numPartitions)),
+          new HAPartitioner(numPartitions)),
         numPartitions,
         partitionCoalescer).values
     } else {
