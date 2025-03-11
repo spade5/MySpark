@@ -17,15 +17,15 @@
 
 package org.apache.spark.streaming.receiver
 
-import org.apache.spark.rdd.BlockStats
-
+import scala.collection.mutable
 import scala.collection.mutable.ArrayBuffer
+
 import org.apache.spark.{SparkConf, SparkEnv, SparkException}
-import org.apache.spark.rpc.{RpcEndpointRef, RpcEnv, ThreadSafeRpcEndpoint}
-import org.apache.spark.storage.StreamBlockId
-import org.apache.spark.streaming.scheduler.AddBlockExtraInfo
+import org.apache.spark.rdd.BlockStats
+import org.apache.spark.storage.{BlockId, StreamBlockId}
+import org.apache.spark.streaming.scheduler.{AddBlockExtraInfo, ExecutorCacheTaskLocationWithMetrics}
 import org.apache.spark.streaming.util.{FreqAVLTree, RecurringTimer, Regression}
-import org.apache.spark.util.{Clock, RpcUtils, SystemClock}
+import org.apache.spark.util.{AskExecutors, AskStartTime, Clock, RpcUtils, StartTime, SystemClock}
 
 
 /** Listener object for BlockGenerator events */
@@ -41,10 +41,12 @@ import org.apache.spark.util.{Clock, RpcUtils, SystemClock}
  * `ReceiverSupervisor.createBlockGenerator` to create a BlockGenerator and use it.
  */
 
-private[streaming] case class BlockExtraInfo(blockId: StreamBlockId,
+private[streaming] case class BlockExtraInfo(blockId: BlockId,
                                              blockStats: BlockStats[Any],
                                              nextPartitionId: Option[Int],
-                                             executorId: Option[String])
+                                             host: Option[String],
+                                             executorId: Option[String],
+                                             blockTime: Float = 0)
 
 private[streaming] class PartitionBlockGenerator (
      listener: BlockGeneratorListener,
@@ -65,12 +67,28 @@ private[streaming] class PartitionBlockGenerator (
   private val blockIntervalTimer =
     new RecurringTimer(clock, blockIntervalMs, updateCurrentBuffer, "BlockGenerator") */
 
-  private var endpoint: RpcEndpointRef = null
-  private val trackerEndpoint = RpcUtils.makeDriverRef("ReceiverTracker", env.conf, env.rpcEnv)
+  // private val maxRecordsPerBatch = conf.get("MAX_RECORDS_PER_BATCH", "1000").toInt
+  // private var endpoint: RpcEndpointRef = null
+  private lazy val trackerEndpoint = RpcUtils.makeDriverRef("ReceiverTracker", env.conf, env.rpcEnv)
   private var blockIntervalTimer: RecurringTimer = null
-  private val freqAVLTree = new FreqAVLTree[Any](true)
-  private val numMappers = 3
-  private val regression = new Regression()
+  private val queue = new mutable.Queue[FreqAVLTree[Any]]
+  private var count = 0
+  private val numMappers = conf.get("spark.default.parallelism", "3").toInt - 1
+  private val regression = new Regression(conf)
+
+  def curAvlTree: FreqAVLTree[Any] = {
+    if (queue.isEmpty) {
+      queue += new FreqAVLTree[Any](true)
+    }
+    queue.last
+  }
+
+  def dequeueAvlTree(): FreqAVLTree[Any] = {
+    if (queue.isEmpty) {
+      queue += new FreqAVLTree[Any](true)
+    }
+    queue.dequeue()
+  }
 
   override def addData(data: Any): Unit = {
     if (state == Active) {
@@ -78,7 +96,22 @@ private[streaming] class PartitionBlockGenerator (
       synchronized {
         if (state == Active) {
           // currentBuffer += data
-          freqAVLTree.insert(data)
+          data match {
+            case str: String =>
+              val splits = str.split(Array(' ', '\t', '\n', '\r')).filter(_.nonEmpty)
+              splits.foreach((split) => {
+                curAvlTree.insert(split)
+              })
+              count += splits.length
+            case _ =>
+              curAvlTree.insert(data)
+              count += 1
+          }
+
+          /* if (count >= maxRecordsPerBatch) {
+            count = 0
+            queue += new FreqAVLTree[Any](true)
+          } */
         } else {
           throw new SparkException(
             "Cannot add data as BlockGenerator has not been started or has been stopped")
@@ -100,7 +133,19 @@ private[streaming] class PartitionBlockGenerator (
         s"Cannot start BlockGenerator as its not in the Initialized state [state = $state]")
     }
 
-    endpoint = env.rpcEnv.setupEndpoint(
+    logInfo("Starting BlockGenerator, tracker:" + trackerEndpoint.address)
+
+    trackerEndpoint.askSync[StartTime](AskStartTime) match {
+      case StartTime(startTime, delay) =>
+        blockIntervalTimer = new RecurringTimer(clock, delay, updateCurrentBuffer,
+          "PartitionBlockGenerator")
+        // blockIntervalTimer.start(startTime + (delay * 0.95).toLong)
+        blockIntervalTimer.start()
+      case _ =>
+    }
+
+
+    /* endpoint = env.rpcEnv.setupEndpoint(
       "PartitionBlockGenerator-endpoint", new ThreadSafeRpcEndpoint {
         override val rpcEnv: RpcEnv = env.rpcEnv
 
@@ -114,7 +159,7 @@ private[streaming] class PartitionBlockGenerator (
             }
         }
       })
-    println("endpoint blockGenerator:" + endpoint.address)
+    println("endpoint blockGenerator:" + endpoint.address) */
   }
 
   /**
@@ -145,14 +190,16 @@ private[streaming] class PartitionBlockGenerator (
     synchronized { state = StoppedAll }
     logInfo("Stopped BlockGenerator")
 
-    env.rpcEnv.stop(
-      endpoint
-    )
+    /* env.rpcEnv.stop(
+       endpoint
+    ) */
   }
 
   /** Change the buffer to which single records are added to. */
   override def updateCurrentBuffer(time: Long): Unit = {
     println("updateCurrentBuffer:" + time)
+    logInfo(s"Updating current buffer for time $time, count=$count ")
+    println(s"Updating current buffer for time $time, count=$count ")
     try {
       var newBlocks: List[Block] = null
       synchronized {
@@ -163,15 +210,19 @@ private[streaming] class PartitionBlockGenerator (
           listener.onGenerateBlock(blockId)
           newBlock = new Block(blockId, newBlockBuffer)
         } */
+        val freqAVLTree = dequeueAvlTree()
         if (!freqAVLTree.empty) {
           val bufferList = freqAVLTree.getAllData
+          println(s"total=${freqAVLTree.getTotal} bufferList.size=${bufferList.size}")
           freqAVLTree.clear()
           newBlocks = generateBlocks(time, bufferList)
         }
       }
 
       if (newBlocks != null) {
-        newBlocks.foreach(newBlock => blocksForPushing.put(newBlock))
+        newBlocks.foreach(newBlock => {
+          blocksForPushing.put(newBlock)
+        })
       }
     } catch {
       case ie: InterruptedException =>
@@ -182,7 +233,14 @@ private[streaming] class PartitionBlockGenerator (
   }
 
   def generateBlocks(time: Long, bufferList: List[ArrayBuffer[Any]]): List[Block] = {
-    generateBlockPromptStyle(time, bufferList)
+    conf.get("spark.streaming.blockGeneratorStyle", "prompt") match {
+      case "prompt" =>
+        generateBlockPromptStyle(time, bufferList)
+      case "regression" =>
+        generateBlockRegressionStyle(time, bufferList)
+      case _ =>
+        generateBlockPromptStyle(time, bufferList)
+    }
   }
 
   private def generateBlockPromptStyle(time: Long,
@@ -194,6 +252,8 @@ private[streaming] class PartitionBlockGenerator (
     var step = 1
     // 将 bufferList 中的数据按照 Z 字形依次添加到 buffers 中
     // println("bufferList:" + bufferList)
+     println(s"bufferList.size=${bufferList.size}, " +
+      s"bufferList.length=${bufferList.length}, total=${bufferList.map(_.size).sum}")
     bufferList.foreach((buffer) => {
       buffers(i) ++= buffer
       blockStats(i).insert(buffer(0), buffer.size)
@@ -213,25 +273,133 @@ private[streaming] class PartitionBlockGenerator (
       case (buffer, index) =>
         val blockId = StreamBlockId(receiverId, time + index)
         listener.onGenerateBlock(blockId)
+        logInfo(s"Generated block $blockId of size: ${buffer.size} at time $time")
         trackerEndpoint.send(
-          AddBlockExtraInfo(BlockExtraInfo(blockId, blockStats(index), None, None)))
+          AddBlockExtraInfo(BlockExtraInfo(blockId, blockStats(index), None, None, None)))
         Block(blockId, buffer, None, Some(index))
     }
+  }
+
+  private case class MergedStats[T](stats: BlockStats[T], buffer: ArrayBuffer[T],
+                                    var count: Int = 0)
+
+  private def mergeStats(bufferList: List[ArrayBuffer[Any]], nodeCount: Int):
+  List[MergedStats[Any]] = {
+    val gran_factor = conf.get("spark.streaming.granularityFactor", "50").toInt
+    val threshold = bufferList.map(_.size).sum / Math.max(gran_factor * nodeCount, 1)
+    var mergedStats = List.fill(1)(MergedStats(new BlockStats[Any](), new ArrayBuffer[Any]()))
+
+    logInfo("gran_factor:" + gran_factor)
+    logInfo("threshold:" + threshold)
+
+    bufferList.foreach((buffer) => {
+      if (mergedStats.last.count > threshold) {
+        mergedStats = mergedStats :+ MergedStats(new BlockStats[Any](), new ArrayBuffer[Any]())
+      }
+      mergedStats.last.buffer ++= buffer
+      mergedStats.last.stats.insert(buffer(0), buffer.size)
+      mergedStats.last.count += buffer.size
+    })
+
+    mergedStats
   }
 
   private def generateBlockRegressionStyle(time: Long,
                                            bufferList: List[ArrayBuffer[Any]]): List[Block] = {
     if (!regression.ready) {
+      logError("Regression model is not ready, use prompt style")
       return generateBlockPromptStyle(time, bufferList)
     }
 
-    val buffers = List.fill(numMappers)(new ArrayBuffer[Any]())
+    logInfo("Regression style")
 
-    buffers.filter(_.nonEmpty).zipWithIndex.map{
-      case (buffer, index) =>
-        val blockId = StreamBlockId(receiverId, time + index)
-        listener.onGenerateBlock(blockId)
-        Block(blockId, buffer, None, Some(index))
+    val startTime = clock.getTimeMillis()
+
+    val candidates = trackerEndpoint.
+      askSync[Seq[ExecutorCacheTaskLocationWithMetrics]](AskExecutors).slice(0, 0 + numMappers)
+
+    if (candidates.isEmpty) {
+      logError("No executors available, use prompt style")
+      return generateBlockPromptStyle(time, bufferList)
     }
+
+    logInfo("Candidates:" + candidates.map(_.host).mkString(","))
+
+    val numBlock = math.min(numMappers, candidates.size)
+
+    val buffers = List.fill(numBlock)(new ArrayBuffer[Any]())
+    val blockStats = List.fill(numBlock)(new BlockStats[Any]())
+    val mergedStatsList = mergeStats(bufferList, numBlock)
+
+    logInfo("mergedStats:" + mergedStatsList.size)
+
+    val predTimes = Array.fill(numBlock)(0.0f)
+
+    mergedStatsList.foreach((mergedStats) => {
+      val buffer = mergedStats.buffer
+      val stats = mergedStats.stats
+      var best: Option[Int] = None
+      var minTime: Float = Long.MaxValue
+      var featureList = Array[Array[Float]]()
+      for (i <- 0 until numBlock) {
+        val newBlockStats = blockStats(i).copy()
+        // newBlockStats.insert(buffer(0), buffer.size)
+        newBlockStats.merge(stats)
+        val features: Array[Float] = newBlockStats.calc() ++ candidates(i).metrics
+        featureList = featureList :+ features
+      }
+
+      logInfo(s"Feature list size: ${featureList.length}")
+      logInfo("Feature list:" + featureList.map(_.mkString(",")).mkString("\n"))
+      val times = regression.predict(featureList)
+      logInfo("times:" + times)
+
+      times match {
+        case Some(ts) =>
+          // 找出最佳预测结果// 找出最佳预测结果
+          for (i <- ts.indices) {
+            if (ts(i) < minTime) {
+              minTime = ts(i)
+              best = Some(i)
+            }
+          }
+        case _ =>
+      }
+
+      logInfo("best:" + best)
+      logInfo("minTime:" + minTime)
+
+      val target = best match {
+        case Some(i) =>
+          i
+        case _ =>
+          logWarning("Prediction failed, using round-robin assignment")
+          buffer.size % numBlock
+      }
+
+      buffers(target) ++= buffer
+      blockStats(target).merge(stats)
+      predTimes(target) = minTime
+    })
+
+    logInfo("buffers:" + buffers.map(_.size).mkString(","))
+
+    val blocks = buffers.zipWithIndex.map{
+      case (buffer, index) =>
+        if (buffer.isEmpty) {
+          null
+        } else {
+          val blockId = StreamBlockId(receiverId, time + index)
+          listener.onGenerateBlock(blockId)
+          trackerEndpoint.send(
+            AddBlockExtraInfo(BlockExtraInfo(blockId, blockStats(index), None,
+              Some(candidates(index).host), Some(candidates(index).executorId), predTimes(index))))
+          Block(blockId, buffer, None, Some(index))
+        }
+    }.filter(_ != null)
+
+    logInfo(s"Time taken to generate blocks $time:" + (clock.getTimeMillis() - startTime) + " ms")
+
+    blocks
   }
 }

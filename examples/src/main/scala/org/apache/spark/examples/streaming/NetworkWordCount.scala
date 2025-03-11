@@ -47,6 +47,10 @@ object NetworkWordCount {
     sparkConf.setMaster("local[2]")
     sparkConf.set("spark.default.parallelism", "3")
     sparkConf.set("spark.streaming.blockGeneratorName", "Partition")
+    sparkConf.set("spark.streaming.blockGeneratorStyle", "regression")
+    sparkConf.set("spark.streaming.regression.modelPath", "data/best_xgboost_model.json")
+    sparkConf.set("spark.streaming.granularityFactor", "30")
+    sparkConf.set("spark.streaming.receiver.host", "node95")
     val ssc = new StreamingContext(sparkConf, Seconds(3))
 
     // Create a socket stream on target ip:port and count the

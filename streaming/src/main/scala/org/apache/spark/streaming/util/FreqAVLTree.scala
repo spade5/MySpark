@@ -2,19 +2,18 @@
 package org.apache.spark.streaming.util
 
 import java.util.{Timer, TimerTask}
-
-import scala.annotation.tailrec
 import scala.collection.mutable
 
 private[streaming] class FreqAVLTree[K](
     keepData: Boolean = false,
     updateIntervalMs: Long = 500,
-    updateCount: Int = 500) extends Serializable {
+    updateCount: Int = 2000) extends Serializable {
   private var root: AVLTree[K] = Empty
   private val keyMap: mutable.HashMap[K, Node[K]] = mutable.HashMap()
   private val keyListMap: mutable.HashMap[K, mutable.ArrayBuffer[K]] = mutable.HashMap()
   private val keyMapToUpdate: mutable.HashMap[K, Int] = mutable.HashMap()
   private var currentCount: Int = 0
+  private var total = 0
   var updateTimes: Int = 0
 
   val timer = new Timer()
@@ -25,15 +24,19 @@ private[streaming] class FreqAVLTree[K](
   }, updateIntervalMs, updateIntervalMs)
 
   def insert(key: K): Unit = {
-    currentCount += 1
-    keyMapToUpdate(key) = keyMapToUpdate.getOrElse(key, 0) + 1
+    synchronized {
+      currentCount += 1
+      total += 1
+      keyMapToUpdate(key) = keyMapToUpdate.getOrElse(key, 0) + 1
 
-    if (keepData) {
-      keyListMap.getOrElseUpdate(key, mutable.ArrayBuffer()).append(key)
-    }
+      if (keepData) {
+        keyListMap.getOrElseUpdate(key, mutable.ArrayBuffer()).append(key)
+        // println(s"total data length = ${keyListMap.toList.map(_._2.length).sum}")
+      }
 
-    if (currentCount >= updateCount) {
-      update()
+      if (currentCount >= updateCount) {
+        update()
+      }
     }
   }
 
@@ -45,20 +48,28 @@ private[streaming] class FreqAVLTree[K](
     keyListMap.clear()
     keyMapToUpdate.clear()
     currentCount = 0
+    total = 0
   }
+
+  def getTotal: Int = total
 
   private def update(): Unit = {
     updateTimes += 1
     synchronized {
+      // println(s"Update $updateTimes currentCount=$currentCount keylength=${keyMapToUpdate.size}")
       if (keyMapToUpdate.nonEmpty) {
         keyMapToUpdate.keys.foreach(key => {
+          var value = keyMapToUpdate(key)
           if (keyMap.contains(key)) {
-            val value = keyMap(key).value
-            root = delete(root, value)
-            keyMapToUpdate(key) += value.frequency
-            keyMap -= key
+            val curNode = keyMap(key)
+            value += curNode.value
+
+            curNode.keys -= key
           }
-          root = insert(root, KeyFreqValue(key, keyMapToUpdate(key)))
+          root = insert(root, KeyFreqValue(key, value))
+          // println(root)
+
+          // println(inOrder(root).map(item => s"(${item.key}, ${item.frequency})").mkString(", "))
         })
 
         keyMapToUpdate.clear()
@@ -73,6 +84,7 @@ private[streaming] class FreqAVLTree[K](
   }
 
   def getAllData: List[mutable.ArrayBuffer[K]] = {
+    // println(getAllKeyFreqs.map(item => s"(${item.key}, ${item.frequency})").mkString(", "))
     getAllKeyFreqs.map {
       case KeyFreqValue(key, _) => keyListMap.getOrElse(key, mutable.ArrayBuffer())
     }
@@ -80,42 +92,46 @@ private[streaming] class FreqAVLTree[K](
 
   private def height(tree: AVLTree[K]): Int = tree match {
     case Empty => 0
-    case Node(_, _, _, h) => h
+    case Node(_, _, _, h, _) => h
   }
 
   private def balanceFactor(tree: AVLTree[K]): Int = tree match {
     case Empty => 0
-    case Node(_, left, right, _) => height(left) - height(right)
+    case Node(_, left, right, _, _) => height(left) - height(right)
   }
 
   private def rotateLeft(node: Node[K]): AVLTree[K] = node match {
-    case Node(value, left, Node(rightValue, rightLeft, rightRight, _), _) =>
-      val newLeft = Node(value, left, rightLeft, Math.max(height(left), height(rightLeft)) + 1)
-      Node(rightValue, newLeft, rightRight, Math.max(height(newLeft), height(rightRight)) + 1)
+    case Node(value, left, Node(rightValue, rightLeft, rightRight, _, rightKeys), _, keys) =>
+      val newLeft = Node(value, left, rightLeft, Math.max(height(left),
+        height(rightLeft)) + 1, keys)
+      Node(rightValue, newLeft, rightRight, Math.max(height(newLeft),
+        height(rightRight)) + 1, rightKeys)
     case _ => node
   }
 
   private def rotateRight(node: Node[K]): AVLTree[K] = node match {
-    case Node(value, Node(leftValue, leftLeft, leftRight, _), right, _) =>
-      val newRight = Node(value, leftRight, right, Math.max(height(leftRight), height(right)) + 1)
-      Node(leftValue, leftLeft, newRight, Math.max(height(leftLeft), height(newRight)) + 1)
+    case Node(value, Node(leftValue, leftLeft, leftRight, _, leftKeys), right, _, keys) =>
+      val newRight = Node(value, leftRight, right, Math.max(height(leftRight),
+        height(right)) + 1, keys)
+      Node(leftValue, leftLeft, newRight, Math.max(height(leftLeft),
+        height(newRight)) + 1, leftKeys)
     case _ => node
   }
 
   private def balance(tree: AVLTree[K]): AVLTree[K] = tree match {
     case Empty => Empty
-    case node @ Node(_, left, right, _) =>
+    case node @ Node(_, left, right, _, keys) =>
       val factor = balanceFactor(node)
       if (factor > 1) {
         // 左子树不平衡
         if (balanceFactor(left) < 0) {
-          Node(node.value, rotateLeft(left.asInstanceOf[Node[K]]), right, node.height)
+          Node(node.value, rotateLeft(left.asInstanceOf[Node[K]]), right, node.height, keys)
         }
         rotateRight(node)
       } else if (factor < -1) {
         // 右子树不平衡
         if (balanceFactor(right) > 0) {
-          Node(node.value, left, rotateRight(right.asInstanceOf[Node[K]]), node.height)
+          Node(node.value, left, rotateRight(right.asInstanceOf[Node[K]]), node.height, keys)
         }
         rotateLeft(node)
       } else {
@@ -126,41 +142,28 @@ private[streaming] class FreqAVLTree[K](
 
   private def insert(tree: AVLTree[K], value: KeyFreqValue[K]): AVLTree[K] = tree match {
     case Empty =>
-      keyMap.getOrElseUpdate(value.key, Node(value, Empty, Empty, 1))
-    case Node(v, left, right, _) if value.frequency <= v.frequency =>
-      balance(Node(v, insert(left, value), right, Math.max(height(left), height(right)) + 1))
-    case Node(v, left, right, _) if value.frequency > v.frequency =>
-      balance(Node(v, left, insert(right, value), Math.max(height(left), height(right)) + 1))
-  }
-
-  private def delete(tree: AVLTree[K], value: KeyFreqValue[K]): AVLTree[K] = tree match {
-    case Empty => Empty
-    case Node(v, left, right, _) if (value.frequency < v.frequency ||
-      value.frequency == v.frequency && value.key != v.key) =>
-      balance(Node(v, delete(left, value), right, Math.max(height(left), height(right)) + 1))
-    case Node(v, left, right, _) if value.frequency > v.frequency =>
-      balance(Node(v, left, delete(right, value), Math.max(height(left) + 1, height(right))))
-    case Node(v, left, right, _) => (left, right) match {
-        case (Empty, Empty) => Empty
-        case (Empty, _) => right
-        case (_, Empty) => left
-        case _ => // 如果有两个子树，找到右子树的最小值替代当前节点
-          val minValue = findMin(right)
-          balance(Node(minValue, left, delete(right, minValue),
-            Math.max(height(left), height(right)) + 1))
-      }
-  }
-
-  @tailrec
-  private def findMin(tree: AVLTree[K]): KeyFreqValue[K] = tree match {
-    case Node(value, Empty, _, _) => value
-    case Node(_, left, _, _) => findMin(left)
-    case Empty => throw new NoSuchElementException("Tree is empty")
+      // println(s"Insert ${value.frequency} into empty tree")
+      val hashMap = mutable.HashMap({value.key -> true})
+      val node = Node(value.frequency, Empty, Empty, 1, hashMap)
+      keyMap(value.key) = node
+      node
+    case Node(v, left, right, _, keys) if value.frequency < v =>
+      // println(s"Insert ${value.frequency} into left of $v")
+      balance(Node(v, insert(left, value), right, Math.max(height(left), height(right)) + 1, keys))
+    case Node(v, left, right, _, keys) if value.frequency > v =>
+      // println(s"Insert ${value.frequency} into right of $v")
+      balance(Node(v, left, insert(right, value), Math.max(height(left), height(right)) + 1, keys))
+    case Node(_, _, _, _, keys) =>
+      keys(value.key) = true
+      // println(s"Insert ${value.frequency} into current node")
+      keyMap(value.key) = tree.asInstanceOf[Node[K]]
+      tree
   }
 
   private def inOrder(tree: AVLTree[K]): List[KeyFreqValue[K]] = tree match {
     case Empty => Nil
-    case Node(value, left, right, _) => inOrder(right) ++ List(value) ++ inOrder(left)
+    case Node(value, left, right, _, keys) => inOrder(right) ++
+      keys.toList.map(item => KeyFreqValue(item._1, value)) ++ inOrder(left)
   }
 
   def close(): Unit = {
@@ -173,28 +176,44 @@ private[streaming] case class KeyFreqValue[T](key: T, frequency: Int)
 sealed trait AVLTree[+A]
 case object Empty extends AVLTree[Nothing]
 case class Node[A](
-                    value: KeyFreqValue[A],
+                    value: Int,
                     left: AVLTree[A],
                     right: AVLTree[A],
-                    height: Int
+                    height: Int,
+                    keys: mutable.HashMap[A, Boolean] = mutable.HashMap()
                   ) extends AVLTree[A]
 
 // scalastyle:off println
 object FreqAVLTreeTest extends App {
-  private val freqAVLTree: FreqAVLTree[String] = new FreqAVLTree[String](true, 1000, 10)
+  private val freqAVLTree: FreqAVLTree[String] = new FreqAVLTree[String](true)
 
-  val words = List("hello", "hello", "hello", "hello1", "hello",
-    "hello", "hello", "hello", "hello", "hello", "world", "word", "hello", "word",
-    "world", "world")
+  val words = List("nytpolitics", "Finally", "some", "great", "news", "hope", "they",
+    "lose", "The", "latest", "The", "SPORTS", "Daily", "Thanks", "to", "anaesthete",
+    "chachieseva", "sports", "news", "davidmweissman", "RonFilipkowski", "I", "just",
+    "hope", "that", "whatever", "opened", "your", "eyes", "from")
 
-  words.foreach(key => freqAVLTree.insert(key))
+  words.slice(0, 10).foreach(key => freqAVLTree.insert(key))
   println(freqAVLTree.updateTimes)
   println(freqAVLTree.getAllKeyFreqs)
   println(freqAVLTree.updateTimes)
-  Thread.sleep(2000)
+
+  println(freqAVLTree.getAllData.map(arr => (arr(0), arr.length, arr.size)))
+
+  Thread.sleep(1000)
+
+  words.slice(10, 20).foreach(key => freqAVLTree.insert(key))
   println(freqAVLTree.updateTimes)
+  println(freqAVLTree.getAllKeyFreqs)
+
+  println(freqAVLTree.getAllData.map(arr => (arr(0), arr.length, arr.size)))
+
   freqAVLTree.close()
-  Thread.sleep(2000)
+  Thread.sleep(1000)
+
+  words.slice(20, 30).foreach(key => freqAVLTree.insert(key))
   println(freqAVLTree.updateTimes)
+  println(freqAVLTree.getAllKeyFreqs)
+
+  println(freqAVLTree.getAllData.map(arr => (arr(0), arr.length, arr.size)))
 
 }

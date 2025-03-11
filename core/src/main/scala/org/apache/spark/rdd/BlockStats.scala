@@ -4,8 +4,8 @@ import scala.reflect.ClassTag
 
 // scalastyle:off println
 class BlockStats[T: ClassTag](private val name: String = "") extends Serializable {
-  private var totalNum = 0L
-  private var totalLength = 0L
+  private var totalNum = 0
+  private var totalLength = 0
   private val keyCountLengthMap = scala.collection.mutable.HashMap.empty[String, (Int, Int)]
 
   def insert(item: T, n: Int = 1): Unit = {
@@ -20,7 +20,7 @@ class BlockStats[T: ClassTag](private val name: String = "") extends Serializabl
         key = item.toString
     }
     // println("key:" + key)
-    totalLength += key.length
+    totalLength += key.length * n
     val (count, _) = keyCountLengthMap.getOrElse(key, (0, 0))
     keyCountLengthMap.put(key, (count + n, key.length))
 
@@ -38,25 +38,25 @@ class BlockStats[T: ClassTag](private val name: String = "") extends Serializabl
     print()
   }
 
-  def calc(): Array[Double] = {
+  def calc(): Array[Float] = {
     val keyCountLengthList = keyCountLengthMap.toList
     val keyNum = keyCountLengthList.length
-    val meanLength = if (totalNum > 0) totalLength.toDouble / totalNum.toDouble else 0
-    val meanCount = if (keyNum > 0) totalNum.toDouble / keyNum.toDouble else 0
+    val meanLength = if (totalNum > 0) totalLength.toDouble / totalNum.toFloat else 0
+    val meanCount = if (keyNum > 0) totalNum.toDouble / keyNum.toFloat else 0
 
-    var totalStdLength: Double = 0
-    var totalStdCount: Double = 0
+    var totalStdLength: Float = 0
+    var totalStdCount: Float = 0
 
     // println("keyCountLengthList:" + keyCountLengthList)
 
     keyCountLengthList.foreach { case (_, (count, length)) =>
-      totalStdLength += math.pow(length - meanLength, 2)
-      totalStdCount += math.pow(count - meanCount, 2)
+      totalStdLength += math.pow(length - meanLength, 2).toFloat
+      totalStdCount += math.pow(count - meanCount, 2).toFloat
     }
 
     val res = Array(totalNum, keyNum, totalLength,
-      if (keyNum > 0) math.sqrt(totalStdLength / keyNum) else 0,
-      if (keyNum > 0) math.sqrt(totalStdCount / keyNum) else 0)
+      if (keyNum > 0) math.sqrt(totalStdLength / keyNum).toFloat else 0,
+      if (keyNum > 0) math.sqrt(totalStdCount / keyNum).toFloat else 0)
 
     res
   }
@@ -77,5 +77,13 @@ class BlockStats[T: ClassTag](private val name: String = "") extends Serializabl
 
     println("-------------------Block Stats End----------------------")
 
+  }
+
+  def copy(): BlockStats[T] = {
+    val newBlockStats = new BlockStats[T](name)
+    newBlockStats.totalNum = totalNum
+    newBlockStats.totalLength = totalLength
+    newBlockStats.keyCountLengthMap ++= keyCountLengthMap
+    newBlockStats
   }
 }

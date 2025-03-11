@@ -52,6 +52,8 @@ private[streaming] class ReceiverSupervisorImpl(
   private val host = SparkEnv.get.blockManager.blockManagerId.host
   private val executorId = SparkEnv.get.blockManager.blockManagerId.executorId
 
+  logInfo("Receiver " + streamId + " started at " + host + " with executorId " + executorId)
+
   private val receivedBlockHandler: ReceivedBlockHandler = {
     if (WriteAheadLogUtils.enableReceiverLog(env.conf)) {
       // scalastyle:off println
@@ -209,7 +211,9 @@ private[streaming] class ReceiverSupervisorImpl(
 
   override def createBlockGenerator(
       blockGeneratorListener: BlockGeneratorListener): BlockGenerator = {
+    logInfo("Creating block generator for stream " + streamId)
     // Cleanup BlockGenerators that have already been stopped
+    logInfo("Registered block generators: " + registeredBlockGenerators.size)
     val stoppedGenerators = registeredBlockGenerators.asScala.filter{ _.isStopped }
     stoppedGenerators.foreach(registeredBlockGenerators.remove(_))
 

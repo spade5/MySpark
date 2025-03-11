@@ -378,8 +378,6 @@ private[spark] class TaskSchedulerImpl(
     var minLaunchedLocality: Option[TaskLocality] = None
     // nodes and executors that are excluded for the entire application have already been
     // filtered out by this point
-    // TODO: 此处将 Executor 分配给 TaskSet，需要拆分为寻找 task 对应的 Executor
-
     for (i <- 0 until shuffledOffers.size) {
       val execId = shuffledOffers(i).executorId
       val host = shuffledOffers(i).host
@@ -395,7 +393,6 @@ private[spark] class TaskSchedulerImpl(
             val taskCpus = ResourceProfile.getTaskCpusOrDefaultForProfile(prof, conf)
             val (taskDescOption, didReject, index) =
               taskSet.resourceOffer(execId, host, maxLocality, taskResAssignments)
-            // TODO: resourceOffer 里面会deque task，这里的逻辑要反过来，先 deque，再找到对应的 Executor
             noDelayScheduleRejects &= !didReject
             for (task <- taskDescOption) {
               val (locality, resources) = if (task != null) {

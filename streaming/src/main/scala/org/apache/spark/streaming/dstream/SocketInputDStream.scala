@@ -40,7 +40,8 @@ class SocketInputDStream[T: ClassTag](
   ) extends ReceiverInputDStream[T](_ssc) {
 
   def getReceiver(): Receiver[T] = {
-    new SocketReceiver(host, port, bytesToObjects, storageLevel)
+    new SocketReceiver(host, port, bytesToObjects, storageLevel,
+      Some(_ssc.conf.get("spark.streaming.receiver.host", "")))
   }
 }
 
@@ -49,10 +50,13 @@ class SocketReceiver[T: ClassTag](
     host: String,
     port: Int,
     bytesToObjects: InputStream => Iterator[T],
-    storageLevel: StorageLevel
+    storageLevel: StorageLevel,
+    loc: Option[String] = None
   ) extends Receiver[T](storageLevel) with Logging {
 
   private var socket: Socket = _
+
+  override def preferredLocation: Option[String] = loc
 
   def onStart(): Unit = {
 

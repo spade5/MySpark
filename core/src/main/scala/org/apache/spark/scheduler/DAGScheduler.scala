@@ -303,14 +303,18 @@ private[spark] class DAGScheduler(
     eventProcessLoop.post(
       CompletionEvent(task, reason, result, accumUpdates, metricPeaks, taskInfo))
       // scalastyle:off println
-      val partition = stageIdToStage(task.stageId).rdd.partitions(task.partitionId)
-      partition match {
-        case part: BlockRDDPartition =>
-          val blockId = part.blockId
-          trackerEndpoint.send(TaskEnd(blockId, taskInfo.executorId,
-            taskInfo.finishTime - taskInfo.launchTime))
-          /* println(s"taskEnded: ${blockId}, ${task.stageId}, ${task.partitionId}, " +
-            s"${taskInfo.finishTime - taskInfo.launchTime}") */
+      reason match {
+        case Success =>
+          val partition = stageIdToStage(task.stageId).rdd.partitions(task.partitionId)
+          partition match {
+            case part: BlockRDDPartition =>
+              val blockId = part.blockId
+              trackerEndpoint.send(TaskEnd(blockId, taskInfo.host,
+                taskInfo.finishTime - taskInfo.launchTime))
+              /* println(s"taskEnded: ${blockId}, ${task.stageId}, ${task.partitionId}, " +
+                s"${taskInfo.finishTime - taskInfo.launchTime}") */
+            case _ =>
+          }
         case _ =>
       }
   }
@@ -352,6 +356,7 @@ private[spark] class DAGScheduler(
    * Called by TaskScheduler implementation when a host is added.
    */
   def executorAdded(execId: String, host: String): Unit = {
+    println(s"executorAdded: ${execId}, ${host}")
     eventProcessLoop.post(ExecutorAdded(execId, host))
   }
 
@@ -1514,8 +1519,7 @@ private[spark] class DAGScheduler(
             stage.pendingPartitions += id
             new ShuffleMapTask(stage.id, stage.latestInfo.attemptNumber,
               taskBinary, part, locs, properties, serializedTaskMetrics, Option(jobId),
-              Option(sc.applicationId), sc.applicationAttemptId, stage.rdd.isBarrier(),
-              part.preferExecutorId)
+              Option(sc.applicationId), sc.applicationAttemptId, stage.rdd.isBarrier())
           }
 
         case stage: ResultStage =>
@@ -1526,7 +1530,7 @@ private[spark] class DAGScheduler(
             new ResultTask(stage.id, stage.latestInfo.attemptNumber,
               taskBinary, part, locs, id, properties, serializedTaskMetrics,
               Option(jobId), Option(sc.applicationId), sc.applicationAttemptId,
-              stage.rdd.isBarrier(), part.preferExecutorId)
+              stage.rdd.isBarrier())
           }
       }
     } catch {
@@ -2532,6 +2536,20 @@ private[spark] class DAGScheduler(
       // Nil has already been returned for previously visited partitions.
       return Nil
     }
+
+    val part = rdd.partitions(partition)
+    part match {
+      case p: BlockRDDPartition =>
+        val blockId = p.blockId
+        trackerEndpoint.askSync[Option[TaskLocation]](AskBlockLocation(blockId)) match {
+          case Some(loc) =>
+            logInfo(s"Found block $blockId locally at $loc")
+            return Array(loc)
+          case _ =>
+        }
+      case _ =>
+    }
+
     // If the partition is cached, return the cache locations
     val cached = getCacheLocs(rdd)(partition)
     if (cached.nonEmpty) {

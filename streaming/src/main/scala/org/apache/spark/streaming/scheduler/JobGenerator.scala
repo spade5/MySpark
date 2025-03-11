@@ -21,10 +21,8 @@ import java.util.concurrent.TimeUnit
 import scala.util.{Failure, Success, Try}
 import org.apache.spark.internal.Logging
 import org.apache.spark.rdd.RDD
-import org.apache.spark.rpc.{RpcEndpointRef}
 import org.apache.spark.streaming.{Checkpoint, CheckpointWriter, StreamingConf, Time}
 import org.apache.spark.streaming.api.python.PythonDStream
-import org.apache.spark.streaming.receiver.SubmitJobs
 import org.apache.spark.streaming.util.RecurringTimer
 import org.apache.spark.util.{Clock, EventLoop, ManualClock, Utils}
 
@@ -59,6 +57,9 @@ class JobGenerator(jobScheduler: JobScheduler) extends Logging {
     }
   }
 
+  private val startTime = clock.getTimeMillis()
+  def getStartTime: Long = startTime
+
   private val timer = new RecurringTimer(clock, ssc.graph.batchDuration.milliseconds,
     longTime => eventLoop.post(GenerateJobs(new Time(longTime))), "JobGenerator")
 
@@ -76,7 +77,7 @@ class JobGenerator(jobScheduler: JobScheduler) extends Logging {
   // This not being null means the scheduler has been started and not stopped
   private var eventLoop: EventLoop[JobGeneratorEvent] = null
 
-  private var endpoint: RpcEndpointRef = null
+  // private var endpoint: RpcEndpointRef = null
 
   // last batch whose completion,checkpointing and metadata cleanup has been completed
   @volatile private[streaming] var lastProcessedBatch: Time = null
@@ -258,7 +259,7 @@ class JobGenerator(jobScheduler: JobScheduler) extends Logging {
         jobScheduler.submitJobSet(JobSet(time, jobs, streamIdToInputInfos))
         // endpoint.askSync[Boolean](SubmitJobs)
         // endpoint.ask(SubmitJobs)
-        try {
+        /* try {
           if (endpoint == null) {
             endpoint = ssc.env.rpcEnv.setupEndpointRef(
               ssc.env.rpcEnv.address,
@@ -268,7 +269,7 @@ class JobGenerator(jobScheduler: JobScheduler) extends Logging {
         } catch {
           case e: Exception =>
             logError("Error sending SubmitJobs to PartitionBlockGenerator", e)
-        }
+        } */
       case Failure(e) =>
         jobScheduler.reportError("Error generating jobs for time " + time, e)
         PythonDStream.stopStreamingContextIfPythonProcessIsDead(e)
