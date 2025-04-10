@@ -14,6 +14,9 @@ case class AskBlockExtraInfo(blockId: BlockId)
 case class AskBlockLocation(blockId: BlockId)
   extends ReceiverTrackerMessage
 
+case class AskOtherBlockLocation()
+  extends ReceiverTrackerMessage
+
 case class AskExecutors()
   extends ReceiverTrackerMessage
 

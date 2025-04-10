@@ -34,8 +34,6 @@ class BlockStats[T: ClassTag](private val name: String = "") extends Serializabl
       val (thisCount, _) = keyCountLengthMap.getOrElse(key, (0, 0))
       keyCountLengthMap.put(key, (thisCount + count, length))
     }
-
-    print()
   }
 
   def calc(): Array[Float] = {

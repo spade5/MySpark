@@ -18,8 +18,8 @@
 package org.apache.spark.streaming.scheduler
 
 import java.util.concurrent.{CountDownLatch, TimeUnit}
-import scala.collection.mutable.HashMap
 import scala.collection.Map
+import scala.collection.mutable.{ArrayBuffer, HashMap}
 import scala.concurrent.ExecutionContext
 import scala.util.{Failure, Success}
 import org.apache.spark._
@@ -31,7 +31,7 @@ import org.apache.spark.storage.BlockId
 import org.apache.spark.streaming.{StreamingContext, Time}
 import org.apache.spark.streaming.receiver._
 import org.apache.spark.streaming.util.WriteAheadLogUtils
-import org.apache.spark.util.{AskBlockExtraInfo, AskBlockLocation, AskExecutors, AskStartTime, SerializableConfiguration, StartTime, TaskEnd, ThreadUtils, Utils}
+import org.apache.spark.util.{AskBlockExtraInfo, AskBlockLocation, AskExecutors, AskOtherBlockLocation, AskStartTime, SerializableConfiguration, StartTime, TaskEnd, ThreadUtils, Utils}
 
 
 /** Enumeration to identify current state of a Receiver */
@@ -424,16 +424,122 @@ class ReceiverTracker(ssc: StreamingContext, skipReceiverLaunch: Boolean = false
     }
   }
 
-  private def getExecutors(excludeReceiver: Boolean = false):
-  Seq[ExecutorCacheTaskLocationWithMetrics] = {
-    getExecutors.filter(exec => !excludeReceiver || !receiverTrackingInfos.values.exists(
-      _.runningExecutor.exists(_.executorId == exec.executorId))).map(
-      (exec: ExecutorCacheTaskLocation) => {
-      val metrics = readHostInfo(exec.host).map(_.toFloat)
-      ExecutorCacheTaskLocationWithMetrics(exec.host, exec.executorId, metrics)
-    })
+  val speeds: Map[String, Seq[Float]] = Map("127" -> Seq(9714.24f, 56719.87f),
+    "129" -> Seq(13328.81f, 85678.53f),
+    "134" -> Seq(9274.43f, 62658.77f),
+    "135" -> Seq(13098.11f, 81777.22f),
+    "138" -> Seq(14676.69f, 97868.46f),
+    "137" -> Seq(11457.72f, 100169.81f),
+    "95" -> Seq(7655.65f, 55764.50f))
+
+  private var preAssign = 0
+  private var preHostNames : String = ""
+  private def splitExecutors(executors: Seq[ExecutorCacheTaskLocationWithMetrics]):
+  Seq[Seq[ExecutorCacheTaskLocationWithMetrics]] = {
+    val hostNames = executors.map(_.host.split('.').last)
+    val count = hostNames.length
+    
+    // 添加安全检查
+    if (count > 31) {
+      logWarning(s"Too many executors ($count), using first 31 only")
+      return splitExecutorsSimple(executors)
+    }
+    
+    // 检查主机名是否发生变化
+    if (hostNames.sorted.mkString(",") != preHostNames) {
+      logInfo("Split for HostNames:" + hostNames.sorted.mkString(","))
+      var best = 0
+      var maxScore = Float.MinValue
+      
+      // 遍历所有可能的分组组合
+      for (i <- 0 until (1 << count)) {  // 使用位移替代pow
+        var sum0 = 0f
+        var sum1 = 0f
+        var validCombination = true
+        
+        for (j <- 0 until count) {
+          // 检查speeds中是否存在该主机名
+          speeds.get(hostNames(j)) match {
+            case Some(speedArray) =>
+              if ((i >> j & 1) != 0) {
+                sum0 += speedArray.head
+              } else {
+                sum1 += speedArray.last
+              }
+            case None =>
+              logWarning(s"No speed information for host ${hostNames(j)}")
+              validCombination = false
+          }
+        }
+        
+        if (validCombination) {
+          // 安全的分数计算
+          val mean = (sum0 + sum1) / 2
+          val variance = (sum0 - mean) * (sum0 - mean) + (sum1 - mean) * (sum1 - mean)
+          val score = if (variance > 0) {
+            (sum0 + sum1) / variance
+          } else {
+            0f  // 如果为0，说明分配不均匀
+          }
+          
+          if (score > maxScore) {
+            maxScore = score
+            best = i
+          }
+        }
+      }
+      
+      if (maxScore == Float.MinValue) {
+        logWarning("Failed to find valid combination, using simple split")
+        return splitExecutorsSimple(executors)
+      }
+      
+      preAssign = best
+      preHostNames = hostNames.sorted.mkString(",")
+    }
+    
+    // 根据best进行分组
+    val mapHosts = new ArrayBuffer[String](count)
+    val reduceHosts = new ArrayBuffer[String](count)
+    
+    for (i <- 0 until count) {
+      if ((preAssign >> i & 1) != 0) {
+        mapHosts += hostNames(i)
+      } else {
+        reduceHosts += hostNames(i)
+      }
+    }
+    
+    // 添加日志
+    logInfo(s"Split result: map=${mapHosts.mkString(",")}, reduce=${reduceHosts.mkString(",")}")
+    
+    Seq(
+      executors.filter(exec => mapHosts.contains(exec.host.split('.').last)),
+      executors.filter(exec => reduceHosts.contains(exec.host.split('.').last))
+    )
   }
 
+  // 添加简单的分割方法作为后备
+  private def splitExecutorsSimple(executors: Seq[ExecutorCacheTaskLocationWithMetrics]):
+  Seq[Seq[ExecutorCacheTaskLocationWithMetrics]] = {
+    val mid = executors.length / 2
+    Seq(executors.take(mid), executors.drop(mid))
+  }
+  private def getSplitExecutors(excludeReceiver: Boolean = true):
+  Seq[Seq[ExecutorCacheTaskLocationWithMetrics]] = {
+    val executors = getExecutors.filter(
+      exec => !excludeReceiver || !receiverTrackingInfos.values.exists(
+      _.runningExecutor.exists(_.executorId == exec.executorId))).map(
+      (exec: ExecutorCacheTaskLocation) => {
+        val metrics = readHostInfo(exec.host).map(_.toFloat)
+        ExecutorCacheTaskLocationWithMetrics(exec.host, exec.executorId, metrics)
+      })
+    if (ssc.conf.get("spark.streaming.receiver.pipeline", "false").toBoolean) {
+      splitExecutors(executors)
+    } else {
+      Seq(executors)
+    }
+  }
   /**
    * Run the dummy Spark job to ensure that all executors have registered. This avoids all the
    * receivers to be scheduled on the same node.
@@ -520,18 +626,20 @@ class ReceiverTracker(ssc: StreamingContext, skipReceiverLaunch: Boolean = false
         logInfo("Starting all receivers:" + receivers.size)
 
         val scheduledLocations: Map[Int, Seq[TaskLocation]] = {
-          val host = ssc.conf.get("spark.streaming.receiver.host", "")
-          logInfo("Conf Receiver Host:" + host)
-          if (receivers.length == 1 && host.nonEmpty) {
+          val hostconf = ssc.conf.get("spark.streaming.receiver.host", "")
+          logInfo("Conf Receiver Host:" + hostconf)
+          if (receivers.length == 1 && hostconf.nonEmpty) {
+            val hosts = hostconf.split(",")
             // If there is only one receiver and the host is specified, we will try to schedule
             // the receiver on the specified host
-            val executors = getExecutors()
-            val hostLocation = TaskLocation(host)
-            if (executors.exists(_.host == host)) {
-              logInfo("Found Executor on host:" + host)
-              Map(receivers.head.streamId -> Seq(hostLocation))
+            val executors = getExecutors
+            val locations = executors.filter((e) =>
+              hosts.contains(e.host)).map((e) => TaskLocation(e.host))
+            if (locations.nonEmpty) {
+              logInfo("Found Executor on host:" + hosts.mkString(","))
+              Map(receivers.head.streamId -> locations)
             } else {
-              logInfo("No Executor on host:" + host)
+              logInfo("No Executor on host:" + hosts.mkString(","))
               logInfo("executors:" + executors.map(_.host).mkString(","))
               schedulingPolicy.scheduleReceivers(receivers, getExecutors)
             }
@@ -563,9 +671,13 @@ class ReceiverTracker(ssc: StreamingContext, skipReceiverLaunch: Boolean = false
         blockExtraInfo.getOrElse(blockId, None) match {
           case extraInfo: BlockExtraInfo =>
             // scalastyle:off println
-            val info = s"TaskEnd:$blockId,$hostName," +
+            val hostInfo: Seq[Any] = extraInfo.hostInfo match {
+              case Some(info) => info
+              case None => Array(0, 0, 0)
+            }
+            val info = s"[TaskEnd]$blockId,$hostName," +
               s"${extraInfo.blockStats.calc().mkString("", ",", "")}," +
-              s"${readHostInfo(hostName).mkString("", ",", "")}," +
+              s"${hostInfo.mkString("", ",", "")}," +
               s"$executionTime,${extraInfo.blockTime}"
             println(info)
             logInfo(info)
@@ -629,10 +741,13 @@ class ReceiverTracker(ssc: StreamingContext, skipReceiverLaunch: Boolean = false
         context.reply(blockExtraInfo.getOrElse(blockId, None))
 
       case AskExecutors =>
-        context.reply(getExecutors(true))
+        context.reply(getSplitExecutors())
 
       case AskBlockLocation(blockId) =>
         context.reply(getBlockLocation(blockId))
+
+      case AskOtherBlockLocation() =>
+        context.reply(getOtherBlockLocation)
 
       case AskStartTime =>
         logInfo(s"Received AskStartTime:" +
@@ -656,6 +771,15 @@ class ReceiverTracker(ssc: StreamingContext, skipReceiverLaunch: Boolean = false
         context.reply(true)
     }
 
+    private def getOtherBlockLocation: Seq[TaskLocation] = {
+      if (blockExtraInfo.isEmpty) {
+        return Seq[TaskLocation]()
+      }
+      val executors: Seq[ExecutorCacheTaskLocationWithMetrics] = getSplitExecutors().last
+      executors.map { exec =>
+        TaskLocation(exec.host)
+      }
+    }
     private def getBlockLocation(blockId: BlockId): Option[TaskLocation] = {
       blockExtraInfo.getOrElse(blockId, None) match {
         case extraInfo: BlockExtraInfo =>

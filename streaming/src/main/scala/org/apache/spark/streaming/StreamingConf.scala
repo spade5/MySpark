@@ -171,7 +171,7 @@ object StreamingConf {
     ConfigBuilder("spark.streaming.concurrentJobs")
       .version("0.7.0")
       .intConf
-      .createWithDefault(1)
+      .createWithDefault(2)
 
   private[streaming] val GRACEFUL_STOP_TIMEOUT =
     ConfigBuilder("spark.streaming.gracefulStopTimeout")

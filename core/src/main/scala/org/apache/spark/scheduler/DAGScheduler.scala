@@ -310,11 +310,15 @@ private[spark] class DAGScheduler(
             case part: BlockRDDPartition =>
               val blockId = part.blockId
               trackerEndpoint.send(TaskEnd(blockId, taskInfo.host,
-                taskInfo.finishTime - taskInfo.launchTime))
+                taskInfo.duration))
               /* println(s"taskEnded: ${blockId}, ${task.stageId}, ${task.partitionId}, " +
                 s"${taskInfo.finishTime - taskInfo.launchTime}") */
             case _ =>
           }
+
+          /* println(s"stage: ${stageIdToStage(task.stageId).name}," +
+            s" task id: ${taskInfo.taskId} records read:" +
+            s" ${task.metrics.accumulators().map(_.value).mkString(",")}") */
         case _ =>
       }
   }
@@ -2548,6 +2552,10 @@ private[spark] class DAGScheduler(
           case _ =>
         }
       case _ =>
+        val locs = trackerEndpoint.askSync[Seq[TaskLocation]](AskOtherBlockLocation())
+        if (locs.nonEmpty) {
+          return locs
+        }
     }
 
     // If the partition is cached, return the cache locations

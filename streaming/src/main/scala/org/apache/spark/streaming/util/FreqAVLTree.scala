@@ -23,14 +23,14 @@ private[streaming] class FreqAVLTree[K](
     }
   }, updateIntervalMs, updateIntervalMs)
 
-  def insert(key: K): Unit = {
+  def insert(key: K, count: Int = 1): Unit = {
     synchronized {
-      currentCount += 1
-      total += 1
-      keyMapToUpdate(key) = keyMapToUpdate.getOrElse(key, 0) + 1
+      currentCount += count
+      total += count
+      keyMapToUpdate(key) = keyMapToUpdate.getOrElse(key, 0) + count
 
       if (keepData) {
-        keyListMap.getOrElseUpdate(key, mutable.ArrayBuffer()).append(key)
+        keyListMap.getOrElseUpdate(key, mutable.ArrayBuffer()).appendAll(List.fill(count)(key))
         // println(s"total data length = ${keyListMap.toList.map(_._2.length).sum}")
       }
 
