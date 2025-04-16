@@ -56,7 +56,7 @@ private[spark] class ShuffleMapTask(
     @transient private var locs: Seq[TaskLocation],
     localProperties: Properties,
     serializedTaskMetrics: Array[Byte],
-    jobId: Option[Int] = None,
+    jobId: Option[Int] = None, //TODO: jobID 可以作为 shuffleWrite 分区的依据，读取已有的分区方案
     appId: Option[String] = None,
     appAttemptId: Option[String] = None,
     isBarrier: Boolean = false,

@@ -19,21 +19,18 @@ package org.apache.spark.util.collection
 
 import java.io._
 import java.util.Comparator
-
 import scala.collection.mutable
 import scala.collection.mutable.ArrayBuffer
-
 import com.google.common.io.ByteStreams
-
 import org.apache.spark._
 import org.apache.spark.executor.ShuffleWriteMetrics
-import org.apache.spark.internal.{config, Logging}
+import org.apache.spark.internal.{Logging, config}
 import org.apache.spark.serializer._
 import org.apache.spark.shuffle.ShufflePartitionPairsWriter
 import org.apache.spark.shuffle.api.{ShuffleMapOutputWriter, ShufflePartitionWriter}
 import org.apache.spark.shuffle.checksum.ShuffleChecksumSupport
 import org.apache.spark.storage.{BlockId, DiskBlockObjectWriter, ShuffleBlockId}
-import org.apache.spark.util.{CompletionIterator, Utils => TryUtils}
+import org.apache.spark.util.{CompletionIterator, RpcUtils, Utils => TryUtils}
 
 /**
  * Sorts and potentially merges a number of key-value pairs of type (K, V) to produce key-combiner
@@ -103,8 +100,18 @@ private[spark] class ExternalSorter[K, V, C](
 
   private val numPartitions = partitioner.map(_.numPartitions).getOrElse(1)
   private val shouldPartition = numPartitions > 1
+  private lazy val trackerEndpoint = RpcUtils.makeDriverRef("ReceiverTracker",
+    conf, SparkEnv.get.rpcEnv)
+
+  private var partKeyMap: Map[String, Int] = Map.empty
   private def getPartition(key: K): Int = {
-    if (shouldPartition) partitioner.get.getPartition(key) else 0
+    if (shouldPartition) {
+      if (partKeyMap.isEmpty) {
+        partitioner.get.getPartition(key)
+      } else {
+        partKeyMap.getOrElse(key.toString, partitioner.get.getPartition(key))
+      }
+    } else 0
   }
 
   private val blockManager = SparkEnv.get.blockManager
@@ -185,6 +192,8 @@ private[spark] class ExternalSorter[K, V, C](
   def insertAll(records: Iterator[Product2[K, V]]): Unit = {
     // TODO: stop combining if we find that the reduction factor isn't high
     val shouldCombine = aggregator.isDefined
+
+    // partKeyMap = trackerEndpoint.askSync[Map[String, Int]](GetPartKeyMap)
 
     if (shouldCombine) {
       // Combine values in-memory first using our AppendOnlyMap

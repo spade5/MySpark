@@ -18,7 +18,7 @@
 package org.apache.spark.streaming.scheduler
 
 import java.util.concurrent.{CountDownLatch, TimeUnit}
-import scala.collection.Map
+import scala.collection.{Map, mutable}
 import scala.collection.mutable.{ArrayBuffer, HashMap}
 import scala.concurrent.ExecutionContext
 import scala.util.{Failure, Success}
@@ -31,7 +31,7 @@ import org.apache.spark.storage.BlockId
 import org.apache.spark.streaming.{StreamingContext, Time}
 import org.apache.spark.streaming.receiver._
 import org.apache.spark.streaming.util.WriteAheadLogUtils
-import org.apache.spark.util.{AskBlockExtraInfo, AskBlockLocation, AskExecutors, AskOtherBlockLocation, AskStartTime, SerializableConfiguration, StartTime, TaskEnd, ThreadUtils, Utils}
+import org.apache.spark.util.{AskBlockExtraInfo, AskBlockLocation, AskExecutors, AskOtherBlockLocation, AskStartTime, GetPartKeyMap, ReduceTaskEnd, SerializableConfiguration, StartTime, TaskEnd, ThreadUtils, UpdatePartKeyMap, Utils}
 
 
 /** Enumeration to identify current state of a Receiver */
@@ -420,7 +420,7 @@ class ReceiverTracker(ssc: StreamingContext, skipReceiverLaunch: Boolean = false
         blockManagerId.executorId != SparkContext.DRIVER_IDENTIFIER // Ignore the driver location
       }.map { case (blockManagerId, _) =>
         ExecutorCacheTaskLocation(blockManagerId.host, blockManagerId.executorId)
-      }.toSeq
+      }.toList.sortBy(_.executorId)
     }
   }
 
@@ -620,6 +620,9 @@ class ReceiverTracker(ssc: StreamingContext, skipReceiverLaunch: Boolean = false
 
     @volatile private var active: Boolean = true
 
+    private val partExtraInfoMap = mutable.HashMap[Int, BlockExtraInfo]()
+    private val rddPartExtraInfoMap = mutable.HashMap[Int, Map[Int, BlockExtraInfo]]()
+
     override def receive: PartialFunction[Any, Unit] = {
       // Local messages
       case StartAllReceivers(receivers) =>
@@ -660,14 +663,15 @@ class ReceiverTracker(ssc: StreamingContext, skipReceiverLaunch: Boolean = false
       case AddBlockExtraInfo(extraInfo) =>
         logInfo("AddBlockExtraInfo:" + extraInfo.host)
         blockExtraInfo.put(extraInfo.blockId, extraInfo)
+        partExtraInfoMap.put(extraInfo.index, extraInfo)
 
-       case TaskEnd(blockId, host, executionTime) =>
-         val hostSplit = host.split('.')
-         var hostName = ""
-         hostSplit.length match {
-           case 4 => hostName = "node" + hostSplit(3)
-           case _ => hostName = host
-         }
+      case TaskEnd(blockId, host, executionTime) =>
+        val hostSplit = host.split('.')
+        var hostName = ""
+        hostSplit.length match {
+         case 4 => hostName = "node" + hostSplit(3)
+         case _ => hostName = host
+        }
         blockExtraInfo.getOrElse(blockId, None) match {
           case extraInfo: BlockExtraInfo =>
             // scalastyle:off println
@@ -679,11 +683,48 @@ class ReceiverTracker(ssc: StreamingContext, skipReceiverLaunch: Boolean = false
               s"${extraInfo.blockStats.calc().mkString("", ",", "")}," +
               s"${hostInfo.mkString("", ",", "")}," +
               s"$executionTime,${extraInfo.blockTime}"
-            println(info)
+            // println(info)
             logInfo(info)
           case None =>
             logWarning(s"Block $blockId not found in blockExtraInfo")
         }
+
+      case ReduceTaskEnd(rdd, part, host, executionTime, inputMetrics) =>
+        val hostSplit = host.split('.')
+        var hostName = ""
+        hostSplit.length match {
+          case 4 => hostName = "node" + hostSplit(3)
+          case _ => hostName = host
+        }
+        rddPartExtraInfoMap.getOrElse(rdd, None) match {
+          case map: Map[_, _] =>
+            if (map.nonEmpty && map.head._1.isInstanceOf[Int]
+              && map.head._2.isInstanceOf[BlockExtraInfo]) {
+              // 处理Map[Int, BlockExtraInfo]
+              map.asInstanceOf[Map[Int, BlockExtraInfo]].getOrElse(part, None) match {
+                case extraInfo: BlockExtraInfo =>
+                  // scalastyle:off println
+                  val hostInfo: Seq[Any] = extraInfo.hostInfo match {
+                    case Some(info) => info
+                    case None => Array(0, 0, 0)
+                  }
+                  val info = s"[ReduceTaskEnd]$rdd-$part,$hostName," +
+                    s"${extraInfo.blockStats.calc().mkString("", ",", "")}," +
+                    s"${inputMetrics.recordsRead},${inputMetrics.bytesRead}," +
+                    s"${hostInfo.mkString("", ",", "")}," +
+                    s"$executionTime"
+                  println(info)
+                  logInfo(info)
+                case None =>
+                  logWarning(s"RDD $rdd-$part not found in blockExtraInfo")
+              }
+            }
+          case None =>
+            logWarning(s"RDD $rdd not found in blockExtraInfo")
+        }
+
+      case UpdatePartKeyMap(partKeyMap) =>
+        _partKeyMap = partKeyMap
 
       case RestartReceiver(receiver) =>
         // Old scheduled executors minus the ones that are not active any more
@@ -717,6 +758,8 @@ class ReceiverTracker(ssc: StreamingContext, skipReceiverLaunch: Boolean = false
         reportError(streamId, message, error)
     }
 
+    private var _partKeyMap: Map[String, Int] = Map.empty
+
     override def receiveAndReply(context: RpcCallContext): PartialFunction[Any, Unit] = {
       // Remote messages
       case RegisterReceiver(streamId, typ, host, executorId, receiverEndpoint) =>
@@ -746,8 +789,11 @@ class ReceiverTracker(ssc: StreamingContext, skipReceiverLaunch: Boolean = false
       case AskBlockLocation(blockId) =>
         context.reply(getBlockLocation(blockId))
 
-      case AskOtherBlockLocation() =>
-        context.reply(getOtherBlockLocation)
+      case AskOtherBlockLocation(part, rddID) =>
+        context.reply(getOtherBlockLocation(part, rddID))
+
+      case GetPartKeyMap =>
+        context.reply(_partKeyMap)
 
       case AskStartTime =>
         logInfo(s"Received AskStartTime:" +
@@ -771,14 +817,21 @@ class ReceiverTracker(ssc: StreamingContext, skipReceiverLaunch: Boolean = false
         context.reply(true)
     }
 
-    private def getOtherBlockLocation: Seq[TaskLocation] = {
+    private def getOtherBlockLocation(part: Int, rddID: Int): Seq[TaskLocation] = {
       if (blockExtraInfo.isEmpty) {
         return Seq[TaskLocation]()
       }
+
+      rddPartExtraInfoMap.getOrElseUpdate(rddID, partExtraInfoMap)
+      logInfo(s"getOtherBlockLocation:$rddID,$part")
+
       val executors: Seq[ExecutorCacheTaskLocationWithMetrics] = getSplitExecutors().last
-      executors.map { exec =>
+      val loc = TaskLocation(executors(part % executors.length).host)
+      /* executors.map { exec =>
         TaskLocation(exec.host)
-      }
+      } */
+
+      Array(loc)
     }
     private def getBlockLocation(blockId: BlockId): Option[TaskLocation] = {
       blockExtraInfo.getOrElse(blockId, None) match {

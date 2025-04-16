@@ -1,109 +1,27 @@
-# Apache Spark
+# HARP：异构感知动态分区的微批流处理系统
 
-Spark is a unified analytics engine for large-scale data processing. It provides
-high-level APIs in Scala, Java, Python, and R, and an optimized engine that
-supports general computation graphs for data analysis. It also supports a
-rich set of higher-level tools including Spark SQL for SQL and DataFrames,
-MLlib for machine learning, GraphX for graph processing,
-and Structured Streaming for stream processing.
+## 摘要
 
-<https://spark.apache.org/>
+微批流处理系统作为现代流式计算架构的核心范式，结合了批处理和流处理的优点，通过将连续数据流离散化为微批实现近实时高吞吐数据处理。其技术优势体现为：基于批次缓冲机制降低流式传输开销，利用缓存局部性优化提升计算效率，并通过分布式数据并行架构扩展至大规模集群。分布式数据并行依赖于数据分区过程，缓冲的微批通过特定的规则被分配到若干数据块中。然而，现有系统普遍基于同构环境设计，依赖均匀数据分区维持节点间负载均衡，难以适配当前数据中心广泛存在的异构算力环境，由于计算节点间硬件性能差异，均等划分的数据块将引发处理时间偏移，最终导致系统吞吐率显著下降。
 
-[![GitHub Action Build](https://github.com/apache/spark/actions/workflows/build_and_test.yml/badge.svg?branch=master)](https://github.com/apache/spark/actions/workflows/build_and_test.yml?query=branch%3Amaster)
-[![Jenkins Build](https://amplab.cs.berkeley.edu/jenkins/job/spark-master-test-sbt-hadoop-3.2/badge/icon)](https://amplab.cs.berkeley.edu/jenkins/job/spark-master-test-sbt-hadoop-3.2)
-[![AppVeyor Build](https://img.shields.io/appveyor/ci/ApacheSoftwareFoundation/spark/master.svg?style=plastic&logo=appveyor)](https://ci.appveyor.com/project/ApacheSoftwareFoundation/spark)
-[![PySpark Coverage](https://codecov.io/gh/apache/spark/branch/master/graph/badge.svg)](https://codecov.io/gh/apache/spark)
+针对上述挑战，本研究提出异构感知的动态分区与资源调度联合优化框架。在数据分区层面，构建基于 XGBoost 回归的异构算力模型，通过量化分析节点硬件指标（如 CPU 算力、内存容量）、数据特征（如批次大小、键值分布）与算子逻辑间的耦合关系，预测各节点处理时延；基于此设计贪心动态分区算法，以处理时间均衡为目标，实现异构集群的数据分区。在资源调度层面，提出算子特征驱动的差异化资源分配策略，结合流水线并行调度机制，依据算子计算密集度与资源敏感度调整资源分配，最大化异构资源利用率。
 
+实验评估基于真实流式数据集与异构集群环境。结果表明：在保证端到端延迟的前提下，本方案较最新的权威工作 Prompt 提升吞吐率 27.5\%。本研究为异构友好型流式计算系统提供了理论框架与工程实践参考。
 
-## Online Documentation
+## 示例程序
 
-You can find the latest Spark documentation, including a programming
-guide, on the [project web page](https://spark.apache.org/documentation.html).
-This README file only contains basic setup instructions.
+```scala
+    sparkConf.set("spark.streaming.blockGeneratorStyle", "regression") // 使用 HARP
+    sparkConf.set("spark.streaming.regression.modelPath",
+      "/home/chenhao/workspace/best_xgboost_model.json") // 模型路径
+    sparkConf.set("spark.streaming.granularityFactor", 80) //粒度因子
+    val ssc = new StreamingContext(sparkConf, Seconds(duration))
 
-## Building Spark
+    val lines = ssc.socketTextStream("node21", 9000, StorageLevel.MEMORY_AND_DISK_SER)
 
-Spark is built using [Apache Maven](https://maven.apache.org/).
-To build Spark and its example programs, run:
+    val wordCounts = lines.map(x => (x, 1)).reduceByKey(_ + _)
+    wordCounts.saveAsTextFiles("/home/chenhao/output/counts/" + System.currentTimeMillis())
 
-    ./build/mvn -DskipTests clean package
-
-(You do not need to do this if you downloaded a pre-built package.)
-
-More detailed documentation is available from the project site, at
-["Building Spark"](https://spark.apache.org/docs/latest/building-spark.html).
-
-For general development tips, including info on developing Spark using an IDE, see ["Useful Developer Tools"](https://spark.apache.org/developer-tools.html).
-
-## Interactive Scala Shell
-
-The easiest way to start using Spark is through the Scala shell:
-
-    ./bin/spark-shell
-
-Try the following command, which should return 1,000,000,000:
-
-    scala> spark.range(1000 * 1000 * 1000).count()
-
-## Interactive Python Shell
-
-Alternatively, if you prefer Python, you can use the Python shell:
-
-    ./bin/pyspark
-
-And run the following command, which should also return 1,000,000,000:
-
-    >>> spark.range(1000 * 1000 * 1000).count()
-
-## Example Programs
-
-Spark also comes with several sample programs in the `examples` directory.
-To run one of them, use `./bin/run-example <class> [params]`. For example:
-
-    ./bin/run-example SparkPi
-
-will run the Pi example locally.
-
-You can set the MASTER environment variable when running examples to submit
-examples to a cluster. This can be a mesos:// or spark:// URL,
-"yarn" to run on YARN, and "local" to run
-locally with one thread, or "local[N]" to run locally with N threads. You
-can also use an abbreviated class name if the class is in the `examples`
-package. For instance:
-
-    MASTER=spark://host:7077 ./bin/run-example SparkPi
-
-Many of the example programs print usage help if no params are given.
-
-## Running Tests
-
-Testing first requires [building Spark](#building-spark). Once Spark is built, tests
-can be run using:
-
-    ./dev/run-tests
-
-Please see the guidance on how to
-[run tests for a module, or individual tests](https://spark.apache.org/developer-tools.html#individual-tests).
-
-There is also a Kubernetes integration test, see resource-managers/kubernetes/integration-tests/README.md
-
-## A Note About Hadoop Versions
-
-Spark uses the Hadoop core library to talk to HDFS and other Hadoop-supported
-storage systems. Because the protocols have changed in different versions of
-Hadoop, you must build Spark against the same version that your cluster runs.
-
-Please refer to the build documentation at
-["Specifying the Hadoop Version and Enabling YARN"](https://spark.apache.org/docs/latest/building-spark.html#specifying-the-hadoop-version-and-enabling-yarn)
-for detailed guidance on building for a particular distribution of Hadoop, including
-building for particular Hive and Hive Thriftserver distributions.
-
-## Configuration
-
-Please refer to the [Configuration Guide](https://spark.apache.org/docs/latest/configuration.html)
-in the online documentation for an overview on how to configure Spark.
-
-## Contributing
-
-Please review the [Contribution to Spark guide](https://spark.apache.org/contributing.html)
-for information on how to get started contributing to the project.
+    ssc.start()
+    ssc.awaitTermination()
+```

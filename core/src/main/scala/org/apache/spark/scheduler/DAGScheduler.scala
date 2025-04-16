@@ -314,6 +314,8 @@ private[spark] class DAGScheduler(
               /* println(s"taskEnded: ${blockId}, ${task.stageId}, ${task.partitionId}, " +
                 s"${taskInfo.finishTime - taskInfo.launchTime}") */
             case _ =>
+              trackerEndpoint.send(ReduceTaskEnd(stageIdToStage(task.stageId).rdd.id,
+                task.partitionId, taskInfo.host, taskInfo.duration, task.metrics.inputMetrics))
           }
 
           /* println(s"stage: ${stageIdToStage(task.stageId).name}," +
@@ -2552,7 +2554,8 @@ private[spark] class DAGScheduler(
           case _ =>
         }
       case _ =>
-        val locs = trackerEndpoint.askSync[Seq[TaskLocation]](AskOtherBlockLocation())
+        val locs = trackerEndpoint.askSync[Seq[TaskLocation]](
+          AskOtherBlockLocation(partition, rdd.id))
         if (locs.nonEmpty) {
           return locs
         }

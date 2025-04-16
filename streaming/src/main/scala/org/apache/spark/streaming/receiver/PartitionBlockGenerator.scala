@@ -18,7 +18,7 @@
 package org.apache.spark.streaming.receiver
 
 import scala.collection.mutable
-import scala.collection.mutable.ArrayBuffer
+import scala.collection.mutable.{ArrayBuffer, HashMap}
 
 import org.apache.spark.{SparkConf, SparkEnv, SparkException}
 import org.apache.spark.rdd.BlockStats
@@ -42,6 +42,7 @@ import org.apache.spark.util.{AskExecutors, AskStartTime, Clock, RpcUtils, Start
  */
 
 private[streaming] case class BlockExtraInfo(blockId: BlockId,
+                                             index: Int,
                                              blockStats: BlockStats[Any],
                                              nextPartitionId: Option[Int],
                                              hostInfo: Option[Seq[Float]],
@@ -224,6 +225,7 @@ private[streaming] class PartitionBlockGenerator (
           freqAVLTree.clear()
           count = 0
           newBlocks = generateBlocks(time, bufferList)
+
         }
       }
 
@@ -290,6 +292,7 @@ private[streaming] class PartitionBlockGenerator (
           val executorInfo = candidates.lift(index % candidates.size)
           val extraInfo = BlockExtraInfo(
             blockId,
+            index,
             blockStats(index),
             None,
             executorInfo.map(_.metrics),
@@ -304,7 +307,7 @@ private[streaming] class PartitionBlockGenerator (
   }
 
   private case class MergedStats[T](stats: BlockStats[T], buffer: ArrayBuffer[T],
-                                    var count: Int = 0)
+                                    keys: ArrayBuffer[T], var count: Int = 0)
 
   private def mergeStats(bufferList: List[ArrayBuffer[Any]], nodeCount: Int):
   List[MergedStats[Any]] = {
@@ -317,9 +320,11 @@ private[streaming] class PartitionBlockGenerator (
     
     bufferList.foreach { buffer =>
       if (mergedStats.isEmpty || mergedStats.last.count > threshold) {
-        mergedStats += MergedStats(new BlockStats[Any](), new ArrayBuffer[Any]())
+        mergedStats += MergedStats(new BlockStats[Any](), new ArrayBuffer[Any](),
+          new ArrayBuffer[Any]())
       }
       mergedStats.last.buffer ++= buffer
+      mergedStats.last.keys += buffer(0)
       mergedStats.last.stats.insert(buffer(0), buffer.size)
       mergedStats.last.count += buffer.size
     }
@@ -361,6 +366,8 @@ private[streaming] class PartitionBlockGenerator (
     logInfo("mergedStats:" + mergedStatsList.size)
 
     val predTimes = Array.fill(numBlock)(0.0f)
+
+    val partKeyMap = new HashMap[String, Int]()
 
     mergedStatsList.foreach((mergedStats) => {
       val buffer = mergedStats.buffer
@@ -404,12 +411,18 @@ private[streaming] class PartitionBlockGenerator (
           buffer.size % numBlock
       }
 
+      /* mergedStats.keys.foreach(key => {
+        partKeyMap.put(key.toString, target)
+      }) */
+
       buffers(target) ++= buffer
       blockStats(target).merge(stats)
       predTimes(target) = minTime
     })
 
     // logInfo("buffers:" + buffers.map(_.size).mkString(","))
+
+    // trackerEndpoint.send(UpdatePartKeyMap(partKeyMap.toMap))
 
     val blocks = buffers.zipWithIndex.map{
       case (buffer, index) =>
@@ -419,6 +432,7 @@ private[streaming] class PartitionBlockGenerator (
           val blockId = StreamBlockId(receiverId, time + index)
           val extraInfo = BlockExtraInfo(
             blockId,
+            index,
             blockStats(index),
             None,
             Some(candidates(index).metrics),
@@ -428,6 +442,7 @@ private[streaming] class PartitionBlockGenerator (
           )
           listener.onGenerateBlock(blockId)
           trackerEndpoint.send(AddBlockExtraInfo(extraInfo))
+
           Block(blockId, buffer, None, Some(index))
         }
     }.filter(_ != null)
